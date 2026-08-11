@@ -86,6 +86,18 @@ class AddAccountRequest(BaseModel):
     proxy_password: Optional[str] = None
 
 
+class ImportSessionRequest(BaseModel):
+    phone: str
+    api_id: int
+    api_hash: str
+    session_file_name: str  # 上传的 session 文件名
+    proxy_type: Optional[str] = None
+    proxy_host: Optional[str] = None
+    proxy_port: Optional[int] = None
+    proxy_username: Optional[str] = None
+    proxy_password: Optional[str] = None
+
+
 class VerifyCodeRequest(BaseModel):
     account_id: str
     code: str
@@ -534,7 +546,133 @@ class WebApp:
             except Exception as e:
                 self.logger.error(f"添加账号失败: {e}")
                 return {"success": False, "message": f"添加账号失败: {str(e)}"}
-        
+
+        @self.app.post("/api/accounts/upload-session")
+        async def upload_session(request: Request, file: bytes = Form(...), phone: str = Form(...),
+                                 api_id: int = Form(...), api_hash: str = Form(...)):
+            """上传并导入 .session 文件"""
+            user = self.get_current_user(request)
+            try:
+                # 创建 sessions 目录
+                sessions_dir = Path("sessions")
+                sessions_dir.mkdir(exist_ok=True)
+
+                # 保存上传的 session 文件
+                session_name = phone.replace("+", "")
+                session_path = sessions_dir / f"{session_name}.session"
+
+                with open(session_path, 'wb') as f:
+                    f.write(file)
+
+                self.logger.info(f"Session 文件已保存: {session_path}")
+
+                # 创建账号配置
+                account_config = AccountFactory.create_account_config(
+                    phone=phone,
+                    api_id=api_id,
+                    api_hash=api_hash,
+                    proxy_config=None
+                )
+
+                # 使用上传的 session 文件
+                from telethon import TelegramClient
+                client = TelegramClient(
+                    str(session_path.with_suffix('')),  # 不带 .session 后缀
+                    account_config.api_id,
+                    account_config.api_hash
+                )
+
+                await client.connect()
+
+                # 检查 session 是否有效
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    session_path.unlink()  # 删除无效的 session 文件
+                    return {"success": False, "message": "Session 文件无效或已过期，请重新登录"}
+
+                # 获取用户信息
+                me = await client.get_me()
+
+                # 创建账号
+                account = Account(
+                    account_id=phone,
+                    config=account_config,
+                    client=client,
+                    own_user_id=me.id,
+                    monitor_active=True
+                )
+
+                self.account_manager.add_account(account)
+                await self.broadcast_status_update()
+
+                self.logger.info(f"通过 Session 文件成功添加账号: {phone}, 用户ID: {me.id}")
+                return {"success": True, "message": f"账号导入成功！用户: {me.first_name or phone}"}
+
+            except Exception as e:
+                self.logger.error(f"导入 Session 文件失败: {e}")
+                return {"success": False, "message": f"导入失败: {str(e)}"}
+
+        @self.app.post("/api/accounts/import-session")
+        async def import_session(request: Request, import_req: ImportSessionRequest):
+            """通过已上传的 session 文件导入账号"""
+            user = self.get_current_user(request)
+            try:
+                proxy_config = None
+                if import_req.proxy_type and import_req.proxy_host and import_req.proxy_port:
+                    proxy_config = {
+                        'type': import_req.proxy_type,
+                        'host': import_req.proxy_host,
+                        'port': import_req.proxy_port,
+                        'username': import_req.proxy_username,
+                        'password': import_req.proxy_password
+                    }
+
+                account_config = AccountFactory.create_account_config(
+                    phone=import_req.phone,
+                    api_id=import_req.api_id,
+                    api_hash=import_req.api_hash,
+                    proxy_config=proxy_config
+                )
+
+                # session 文件路径
+                sessions_dir = Path("sessions")
+                session_path = sessions_dir / import_req.session_file_name
+
+                if not session_path.exists():
+                    return {"success": False, "message": f"Session 文件不存在: {import_req.session_file_name}"}
+
+                from telethon import TelegramClient
+                client = TelegramClient(
+                    str(session_path.with_suffix('')),
+                    account_config.api_id,
+                    account_config.api_hash,
+                    proxy=account_config.proxy
+                )
+
+                await client.connect()
+
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    return {"success": False, "message": "Session 已过期，请重新上传有效的 session 文件"}
+
+                me = await client.get_me()
+                account = Account(
+                    account_id=import_req.phone,
+                    config=account_config,
+                    client=client,
+                    own_user_id=me.id,
+                    monitor_active=True
+                )
+
+                self.account_manager.add_account(account)
+                await self.broadcast_status_update()
+
+                return {"success": True, "message": f"账号导入成功！用户: {me.first_name or import_req.phone}"}
+
+            except Exception as e:
+                self.logger.error(f"导入账号失败: {e}")
+                return {"success": False, "message": f"导入失败: {str(e)}"}
+
         @self.app.post("/api/accounts/verify")
         async def verify_code(request: Request, verify_code_request: VerifyCodeRequest):
             user = self.get_current_user(request)
