@@ -2,7 +2,14 @@ version: '3.8'
 
 services:
   tg-monitor:
-    image: ghcr.io/你的GitHub用户名/tg-auto:latest
+    # 使用 GitHub Container Registry 预构建镜像
+    image: ghcr.io/imi6/tg-auto:latest
+
+    # 如需本地构建，注释掉上面的 image，取消注释下面的 build
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+
     container_name: telegram-monitor
     restart: always
 
@@ -16,7 +23,7 @@ services:
       - TG_API_ID=
       - TG_API_HASH=
 
-      # OpenAI API 配置 (可选1)
+      # OpenAI API 配置 (可选)
       - OPENAI_API_KEY=
       - OPENAI_MODEL=gpt-4o
       - OPENAI_BASE_URL=https://api.openai.com/v1
