@@ -219,8 +219,7 @@ class WebApp:
             if request.session.get("user"):
                 return RedirectResponse(url="/", status_code=302)
             
-            return self.templates.TemplateResponse("login.html", {
-                "request": request,
+            return self.templates.TemplateResponse("login.html", request=request, context={
                 "title": "登录"
             })
         
@@ -246,8 +245,7 @@ class WebApp:
                 return RedirectResponse(url="/login", status_code=302)
             
             user = self.get_current_user(request)
-            return self.templates.TemplateResponse("dashboard.html", {
-                "request": request,
+            return self.templates.TemplateResponse("dashboard.html", request=request, context={
                 "title": "监控仪表板",
                 "user": user
             })
@@ -255,8 +253,7 @@ class WebApp:
         @self.app.get("/logs", response_class=HTMLResponse)
         async def logs_page(request: Request):
             user = self.get_current_user(request)
-            return self.templates.TemplateResponse("logs.html", {
-                "request": request,
+            return self.templates.TemplateResponse("logs.html", request=request, context={
                 "title": "程序日志",
                 "user": user
             })
@@ -264,8 +261,7 @@ class WebApp:
         @self.app.get("/accounts", response_class=HTMLResponse)
         async def accounts_page(request: Request):
             user = self.get_current_user(request)
-            return self.templates.TemplateResponse("accounts.html", {
-                "request": request,
+            return self.templates.TemplateResponse("accounts.html", request=request, context={
                 "title": "账号管理",
                 "user": user
             })
@@ -273,8 +269,7 @@ class WebApp:
         @self.app.get("/monitors", response_class=HTMLResponse)
         async def monitors_page(request: Request):
             user = self.get_current_user(request)
-            return self.templates.TemplateResponse("monitors.html", {
-                "request": request,
+            return self.templates.TemplateResponse("monitors.html", request=request, context={
                 "title": "监控器管理",
                 "user": user
             })
@@ -287,41 +282,28 @@ class WebApp:
             edit_key = request.query_params.get('key', '')
             edit_config = request.query_params.get('config', '{}')
             
-            return self.templates.TemplateResponse(
-                "wizard.html",
-                {
-                    "request": request,
+            return self.templates.TemplateResponse("wizard.html", request=request, context={
                     "monitor_type": monitor_type,
                     "edit_mode": edit_mode,
                     "edit_key": edit_key,
                     "edit_config": edit_config,
                     "user": user
-                }
-            )
+                })
         
         @self.app.get("/scheduled-messages", response_class=HTMLResponse)
         async def scheduled_messages_page(request: Request):
             user = self.get_current_user(request)
-            return self.templates.TemplateResponse(
-                "scheduled_messages.html",
-                {"request": request, "user": user}
-            )
+            return self.templates.TemplateResponse("scheduled_messages.html", request=request, context={"user": user})
         
         @self.app.get("/channels", response_class=HTMLResponse)
         async def channels_page(request: Request):
             user = self.get_current_user(request)
-            return self.templates.TemplateResponse(
-                "channels.html",
-                {"request": request, "user": user}
-            )
+            return self.templates.TemplateResponse("channels.html", request=request, context={"user": user})
         
         @self.app.get("/config-export", response_class=HTMLResponse)
         async def config_export_page(request: Request):
             user = self.get_current_user(request)
-            return self.templates.TemplateResponse(
-                "config_export.html",
-                {"request": request, "user": user}
-            )
+            return self.templates.TemplateResponse("config_export.html", request=request, context={"user": user})
         
         @self.app.get("/api/stats")
         async def get_stats(request: Request):
