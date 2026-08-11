@@ -13,7 +13,7 @@ from datetime import datetime
 import io
 from apscheduler.triggers.cron import CronTrigger
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, HTTPException, Depends, Cookie
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, HTTPException, Depends, Cookie, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, RedirectResponse
@@ -548,7 +548,7 @@ class WebApp:
                 return {"success": False, "message": f"添加账号失败: {str(e)}"}
 
         @self.app.post("/api/accounts/upload-session")
-        async def upload_session(request: Request, file: bytes = Form(...), phone: str = Form(...),
+        async def upload_session(request: Request, file: UploadFile = Form(...), phone: str = Form(...),
                                  api_id: int = Form(...), api_hash: str = Form(...)):
             """上传并导入 .session 文件"""
             user = self.get_current_user(request)
@@ -561,8 +561,10 @@ class WebApp:
                 session_name = phone.replace("+", "")
                 session_path = sessions_dir / f"{session_name}.session"
 
+                # 读取上传的文件内容
+                content = await file.read()
                 with open(session_path, 'wb') as f:
-                    f.write(file)
+                    f.write(content)
 
                 self.logger.info(f"Session 文件已保存: {session_path}")
 
