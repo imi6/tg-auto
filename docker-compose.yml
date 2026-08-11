@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  tg-monitor:
+    image: ghcr.io/你的GitHub用户名/tg-auto:latest
+    container_name: telegram-monitor
+    restart: always
+
+    # 端口映射
+    ports:
+      - "8000:8000"
+
+    # 环境变量配置
+    environment:
+      # Telegram API 配置 (必填)
+      - TG_API_ID=
+      - TG_API_HASH=
+
+      # OpenAI API 配置 (可选)
+      - OPENAI_API_KEY=
+      - OPENAI_MODEL=gpt-4o
+      - OPENAI_BASE_URL=https://api.openai.com/v1
+
+      # 邮件通知配置 (可选)
+      - EMAIL_SMTP_SERVER=smtp.gmail.com
+      - EMAIL_SMTP_PORT=465
+      - EMAIL_USERNAME=
+      - EMAIL_PASSWORD=
+      - EMAIL_FROM=
+      - EMAIL_TO=
+
+      # Web 界面配置
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8000
+      - WEB_DEBUG=false
+      - WEB_USERNAME=admin
+      - WEB_PASSWORD=admin123
+
+      # 数据存储配置
+      - DATA_DIR=./data
+      - LOGS_DIR=./logs
+      - DOWNLOADS_DIR=./downloads
+
+    # 数据持久化
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./downloads:/app/downloads
+      - ./sessions:/app/sessions
+
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

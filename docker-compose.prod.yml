@@ -1,0 +1,31 @@
+# 生产环境配置
+# 使用方式: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+version: '3.8'
+
+services:
+  tg-monitor:
+    # 生产环境使用更严格的资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+    # 生产环境环境变量覆盖
+    environment:
+      - WEB_DEBUG=false
+      - WEB_HOST=0.0.0.0
+
+    # 生产环境日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+
+    # 失败后自动重启，最多重试 3 次
+    restart: on-failure:3
