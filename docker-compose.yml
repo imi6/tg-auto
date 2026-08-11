@@ -17,36 +17,16 @@ services:
     ports:
       - "8000:8000"
 
-    # 环境变量配置
+    # 环境变量配置（可选，后台可配置）
     environment:
-      # Telegram API 配置 (必填)
-      - TG_API_ID=
-      - TG_API_HASH=
-
-      # OpenAI API 配置 (可选)
-      - OPENAI_API_KEY=
-      - OPENAI_MODEL=gpt-4o
-      - OPENAI_BASE_URL=https://api.openai.com/v1
-
-      # 邮件通知配置 (可选)
-      - EMAIL_SMTP_SERVER=smtp.gmail.com
-      - EMAIL_SMTP_PORT=465
-      - EMAIL_USERNAME=
-      - EMAIL_PASSWORD=
-      - EMAIL_FROM=
-      - EMAIL_TO=
-
-      # Web 界面配置
-      - WEB_HOST=0.0.0.0
-      - WEB_PORT=8000
-      - WEB_DEBUG=false
+      # Web 界面认证（建议修改默认密码）
       - WEB_USERNAME=admin
       - WEB_PASSWORD=admin123
 
-      # 数据存储配置
-      - DATA_DIR=./data
-      - LOGS_DIR=./logs
-      - DOWNLOADS_DIR=./downloads
+      # Web 服务配置
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8000
+      - WEB_DEBUG=false
 
     # 数据持久化
     volumes:
