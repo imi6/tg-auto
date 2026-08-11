@@ -16,7 +16,7 @@ services:
       - TG_API_ID=
       - TG_API_HASH=
 
-      # OpenAI API 配置 (可选)
+      # OpenAI API 配置 (可选1)
       - OPENAI_API_KEY=
       - OPENAI_MODEL=gpt-4o
       - OPENAI_BASE_URL=https://api.openai.com/v1
