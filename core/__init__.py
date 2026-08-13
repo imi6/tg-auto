@@ -10,10 +10,12 @@ from .monitor_engine import MonitorEngine
 from .batch_task_manager import BatchTaskManager
 from .join_task_manager import JoinTaskManager
 from .profile_task_manager import ProfileTaskManager
+from .group_library_store import GroupLibraryStore
 
 __all__ = [
     'ProxyManager',
     'SendRecordStore',
+    'GroupLibraryStore',
     'AccountManager',
     'MonitorEngine',
     'BatchTaskManager',

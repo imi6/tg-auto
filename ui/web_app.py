@@ -8,7 +8,7 @@ import json
 import re
 import secrets
 import pytz
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 from datetime import datetime
 import io
@@ -25,6 +25,7 @@ from core import AccountManager, MonitorEngine
 from core.account_manager import AccountFactory
 from core.join_task_manager import JoinTaskManager
 from core.profile_task_manager import ProfileTaskManager
+from core.group_library_store import GroupLibraryStore
 from core.proxy_manager import ProxyManager
 from core.send_record_store import SendRecordStore
 from utils.session_meta import parse_session_metadata
@@ -144,6 +145,22 @@ class BatchJoinRequest(BaseModel):
     delay_max: int = 60
     max_per_account: int = 20
     max_flood_wait: int = 600
+    save_to_library: bool = False
+
+
+class GroupLibraryRequest(BaseModel):
+    targets: Union[str, List[str]] = ""
+    tag: str = ""
+    title: str = ""
+
+
+class GroupLibraryUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    tag: Optional[str] = None
+
+
+class GroupLibraryDeleteRequest(BaseModel):
+    entry_ids: List[str]
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -185,6 +202,7 @@ class WebApp:
         self.profile_service = ProfileService()
         self.join_task_manager = JoinTaskManager()
         self.profile_task_manager = ProfileTaskManager()
+        self.group_library = GroupLibraryStore()
         self.logger = get_logger(__name__)
         
         self.websocket_connections: List[WebSocket] = []
@@ -1732,6 +1750,63 @@ class WebApp:
                 "invalid": parsed["invalid"]
             }
         
+        @self.app.get("/api/groups/library")
+        async def list_group_library(request: Request, keyword: str = "", tag: str = ""):
+            user = self.get_current_user(request)
+            
+            return {
+                "success": True,
+                "entries": self.group_library.list_entries(keyword=keyword, tag=tag),
+                "tags": self.group_library.list_tags(),
+                "total": len(self.group_library.entries)
+            }
+        
+        @self.app.post("/api/groups/library")
+        async def add_group_library(request: Request, library_request: GroupLibraryRequest):
+            user = self.get_current_user(request)
+            
+            result = self.group_library.add_many(
+                library_request.targets,
+                tag=library_request.tag,
+                title=library_request.title
+            )
+            
+            added = len(result["added"])
+            if not added and not result["duplicated"]:
+                return {
+                    "success": False,
+                    "message": "没有识别出有效的群组链接或用户名",
+                    **result
+                }
+            
+            parts = [f"已添加 {added} 个"]
+            if result["duplicated"]:
+                parts.append(f"{len(result['duplicated'])} 个已存在")
+            if result["invalid"]:
+                parts.append(f"{len(result['invalid'])} 个无法识别")
+            
+            return {"success": True, "message": "，".join(parts), **result}
+        
+        @self.app.put("/api/groups/library/{entry_id}")
+        async def update_group_library(request: Request, entry_id: str,
+                                       update_request: GroupLibraryUpdateRequest):
+            user = self.get_current_user(request)
+            
+            entry = self.group_library.update_entry(
+                entry_id, title=update_request.title, tag=update_request.tag
+            )
+            if not entry:
+                raise HTTPException(status_code=404, detail="群组库中没有这条记录")
+            
+            return {"success": True, "entry": entry, "message": "已保存"}
+        
+        @self.app.post("/api/groups/library/delete")
+        async def delete_group_library(request: Request, delete_request: GroupLibraryDeleteRequest):
+            user = self.get_current_user(request)
+            
+            removed = self.group_library.delete_entries(delete_request.entry_ids)
+            return {"success": True, "removed": removed, "message": f"已删除 {removed} 条"}
+        
         @self.app.post("/api/groups/join-tasks")
         async def create_join_task(request: Request, join_request: BatchJoinRequest):
             user = self.get_current_user(request)
@@ -1760,6 +1835,10 @@ class WebApp:
                     "max_flood_wait": join_request.max_flood_wait,
                 }
             )
+            
+            if join_request.save_to_library:
+                self.group_library.add_many(join_request.targets)
+            self.group_library.mark_used(parsed["targets"])
             
             return {
                 "success": True,

@@ -465,6 +465,7 @@
 
 <div class="gm-tabs">
     <button class="gm-tab active" data-tab="search" onclick="switchTab('search')">搜索群组</button>
+    <button class="gm-tab" data-tab="library" onclick="switchTab('library')">群组库 <span id="libraryBadge"></span></button>
     <button class="gm-tab" data-tab="joined" onclick="switchTab('joined')">已加入的群</button>
     <button class="gm-tab" data-tab="tasks" onclick="switchTab('tasks')">入群任务 <span id="runningBadge"></span></button>
 </div>
@@ -516,6 +517,97 @@
             <button class="btn btn-primary" onclick="openJoinModal(true)">
                 <i class="bi bi-box-arrow-in-right"></i>
                 批量加入所选
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- 群组库 -->
+<div class="gm-panel" id="panel-library">
+    <div class="gm-card">
+        <div class="gm-toolbar">
+            <div class="gm-field grow">
+                <label class="gm-label" for="libraryKeyword">筛选</label>
+                <input class="gm-input" id="libraryKeyword" placeholder="按链接、备注或标签搜索"
+                       oninput="renderLibrary()">
+            </div>
+            <div class="gm-field">
+                <label class="gm-label" for="libraryTagFilter">标签</label>
+                <select class="gm-select" id="libraryTagFilter" style="min-width: 160px;" onchange="renderLibrary()">
+                    <option value="">全部标签</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" style="height: 42px;" onclick="openLibraryAddModal()">
+                <i class="bi bi-plus-lg"></i>
+                添加群组
+            </button>
+            <button class="btn btn-secondary" style="height: 42px;" onclick="loadLibrary()">
+                <i class="bi bi-arrow-clockwise"></i>
+                刷新
+            </button>
+        </div>
+        <div class="gm-hint">
+            把常用的群链接和 @用户名存在这里，建入群任务时直接勾选，不用每次重新粘贴。
+        </div>
+    </div>
+
+    <div class="gm-card" style="padding: 0; overflow: hidden;">
+        <div id="libraryResults">
+            <div class="gm-empty">
+                <i class="bi bi-bookmark"></i>
+                群组库还是空的，点右上角「添加群组」先存几个
+            </div>
+        </div>
+    </div>
+
+    <div class="gm-selection-bar" id="librarySelectionBar" style="display: none;">
+        <span>已选中 <strong id="librarySelectedCount">0</strong> 个群组</span>
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-secondary" onclick="toggleAllLibrary(false)">清空选择</button>
+            <button class="btn btn-secondary" onclick="deleteSelectedLibrary()">
+                <i class="bi bi-trash"></i>
+                删除所选
+            </button>
+            <button class="btn btn-primary" onclick="joinSelectedLibrary()">
+                <i class="bi bi-box-arrow-in-right"></i>
+                一键入群
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- 添加到群组库 -->
+<div class="gm-modal" id="libraryAddModal">
+    <div class="gm-modal-content" style="max-width: 560px;">
+        <div class="gm-modal-header">
+            <h3 id="libraryModalTitle">添加到群组库</h3>
+            <button class="btn-close" onclick="closeLibraryAddModal()"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="gm-modal-body">
+            <div class="gm-field" id="libraryTargetsField">
+                <label class="gm-label" for="libraryTargets">群链接 / 用户名（每行一个）</label>
+                <textarea class="gm-textarea" id="libraryTargets"
+                          placeholder="@zzzs&#10;https://t.me/example_channel&#10;https://t.me/+AbCdEfGhIjK"></textarea>
+                <div class="gm-hint">和入群目标格式一致，重复的会自动跳过。</div>
+            </div>
+
+            <div class="gm-field">
+                <label class="gm-label" for="libraryTag">标签（可选）</label>
+                <input class="gm-input" id="libraryTag" list="libraryTagOptions" placeholder="例如：电商、资源、备用">
+                <datalist id="libraryTagOptions"></datalist>
+                <div class="gm-hint">用来分组，之后可以按标签筛选后整批入群。</div>
+            </div>
+
+            <div class="gm-field">
+                <label class="gm-label" for="libraryTitle">备注（可选）</label>
+                <input class="gm-input" id="libraryTitle" placeholder="给这批群组起个说明，方便日后辨认">
+            </div>
+        </div>
+        <div class="gm-modal-footer">
+            <button class="btn btn-secondary" onclick="closeLibraryAddModal()">取消</button>
+            <button class="btn btn-primary" id="libraryAddBtn" onclick="submitLibraryAdd()">
+                <i class="bi bi-check-lg"></i>
+                添加
             </button>
         </div>
     </div>
@@ -586,10 +678,35 @@
             </div>
 
             <div class="gm-field">
+                <label class="gm-label">从群组库选择</label>
+                <div class="gm-toolbar" style="margin-bottom: 10px;">
+                    <div class="gm-field grow">
+                        <input class="gm-input" id="joinLibrarySearch" placeholder="搜索群组库"
+                               oninput="renderJoinLibraryPicker()">
+                    </div>
+                    <div class="gm-field">
+                        <select class="gm-select" id="joinLibraryTag" style="min-width: 150px;"
+                                onchange="renderJoinLibraryPicker()">
+                            <option value="">全部标签</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" onclick="addLibraryPickToTargets()">
+                        <i class="bi bi-arrow-down"></i>
+                        加入目标框
+                    </button>
+                </div>
+                <div class="gm-account-list" id="joinLibraryPicker"></div>
+            </div>
+
+            <div class="gm-field">
                 <label class="gm-label" for="joinTargets">入群目标（每行一个）</label>
                 <textarea class="gm-textarea" id="joinTargets"
                           placeholder="@example_group&#10;https://t.me/example_channel&#10;https://t.me/+AbCdEfGhIjK"></textarea>
                 <div class="gm-hint">支持 @用户名、t.me 链接、私有群邀请链接（t.me/+xxx 或 joinchat/xxx）以及群组 ID。</div>
+                <label class="gm-hint" style="display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer;">
+                    <input type="checkbox" id="saveToLibrary">
+                    同时把这些目标存进群组库，方便下次直接选
+                </label>
             </div>
 
             <div class="gm-grid-3">
@@ -671,7 +788,305 @@
 
         if (tab === 'tasks') {
             loadTasks();
+        } else if (tab === 'library') {
+            loadLibrary();
         }
+    }
+
+    let libraryEntries = [];
+    let selectedLibrary = new Set();
+    let editingLibraryId = null;
+
+    const KIND_TEXT = { username: '用户名', invite: '邀请链接', id: '群组 ID' };
+
+    async function loadLibrary() {
+        try {
+            const response = await fetch('/api/groups/library');
+            const data = await response.json();
+            libraryEntries = data.entries || [];
+            renderLibraryTags(data.tags || []);
+        } catch (error) {
+            console.error('加载群组库失败:', error);
+            showNotification('加载群组库失败', 'error');
+            libraryEntries = [];
+        }
+
+        document.getElementById('libraryBadge').textContent = libraryEntries.length || '';
+        renderLibrary();
+        renderJoinLibraryPicker();
+    }
+
+    function renderLibraryTags(tags) {
+        const options = ['<option value="">全部标签</option>']
+            .concat(tags.map(tag => `<option value="${escapeHtml(tag)}">${escapeHtml(tag)}</option>`))
+            .join('');
+
+        ['libraryTagFilter', 'joinLibraryTag'].forEach(id => {
+            const select = document.getElementById(id);
+            const previous = select.value;
+            select.innerHTML = options;
+            select.value = tags.includes(previous) ? previous : '';
+        });
+
+        document.getElementById('libraryTagOptions').innerHTML =
+            tags.map(tag => `<option value="${escapeHtml(tag)}"></option>`).join('');
+    }
+
+    function filterLibrary(keyword, tag) {
+        const needle = (keyword || '').trim().toLowerCase();
+
+        return libraryEntries.filter(entry => {
+            if (tag && (entry.tag || '') !== tag) return false;
+            if (!needle) return true;
+            return [entry.raw, entry.title, entry.tag]
+                .some(field => (field || '').toLowerCase().includes(needle));
+        });
+    }
+
+    function renderLibrary() {
+        const container = document.getElementById('libraryResults');
+        const entries = filterLibrary(
+            document.getElementById('libraryKeyword').value,
+            document.getElementById('libraryTagFilter').value
+        );
+
+        if (!entries.length) {
+            container.innerHTML = libraryEntries.length
+                ? '<div class="gm-empty"><i class="bi bi-funnel"></i>没有符合条件的群组</div>'
+                : '<div class="gm-empty"><i class="bi bi-bookmark"></i>群组库还是空的，点右上角「添加群组」先存几个</div>';
+            updateLibrarySelectionBar();
+            return;
+        }
+
+        const rows = entries.map(entry => `
+            <tr>
+                <td class="col-check">
+                    <input type="checkbox" ${selectedLibrary.has(entry.entry_id) ? 'checked' : ''}
+                           onchange="toggleLibraryEntry('${entry.entry_id}', this.checked)">
+                </td>
+                <td>
+                    <div class="gm-title-cell">
+                        <span>${escapeHtml(entry.raw)}</span>
+                        ${entry.title ? `<span class="sub">${escapeHtml(entry.title)}</span>` : ''}
+                    </div>
+                </td>
+                <td><span class="gm-tag">${KIND_TEXT[entry.kind] || entry.kind}</span></td>
+                <td>${entry.tag ? escapeHtml(entry.tag) : '<span style="color: var(--text-muted);">-</span>'}</td>
+                <td>${entry.used_count
+                        ? `${entry.used_count} 次<br><span style="color: var(--text-muted); font-size: 12px;">${escapeHtml((entry.last_used_at || '').replace('T', ' '))}</span>`
+                        : '<span style="color: var(--text-muted);">未使用</span>'}</td>
+                <td style="white-space: nowrap;">
+                    <button class="btn btn-secondary btn-sm" onclick="openLibraryEditModal('${entry.entry_id}')">编辑</button>
+                    <button class="btn btn-secondary btn-sm" onclick="deleteLibraryEntries(['${entry.entry_id}'])">删除</button>
+                </td>
+            </tr>
+        `).join('');
+
+        container.innerHTML = `
+            <table class="gm-table">
+                <thead>
+                    <tr>
+                        <th class="col-check"><input type="checkbox" onchange="toggleAllLibrary(this.checked)"></th>
+                        <th>目标</th>
+                        <th>类型</th>
+                        <th>标签</th>
+                        <th>使用情况</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+        updateLibrarySelectionBar();
+    }
+
+    function toggleLibraryEntry(entryId, checked) {
+        if (checked) {
+            selectedLibrary.add(entryId);
+        } else {
+            selectedLibrary.delete(entryId);
+        }
+        updateLibrarySelectionBar();
+    }
+
+    function toggleAllLibrary(checked) {
+        // 只对当前筛选出来的结果生效，避免误选到看不见的条目
+        const visible = filterLibrary(
+            document.getElementById('libraryKeyword').value,
+            document.getElementById('libraryTagFilter').value
+        );
+        visible.forEach(entry => {
+            if (checked) {
+                selectedLibrary.add(entry.entry_id);
+            } else {
+                selectedLibrary.delete(entry.entry_id);
+            }
+        });
+        renderLibrary();
+    }
+
+    function updateLibrarySelectionBar() {
+        document.getElementById('librarySelectedCount').textContent = selectedLibrary.size;
+        document.getElementById('librarySelectionBar').style.display = selectedLibrary.size ? 'flex' : 'none';
+    }
+
+    function joinSelectedLibrary() {
+        const picked = libraryEntries.filter(entry => selectedLibrary.has(entry.entry_id));
+        if (!picked.length) return;
+
+        openJoinModal();
+        document.getElementById('joinTargets').value = picked.map(entry => entry.raw).join('\n');
+    }
+
+    async function deleteSelectedLibrary() {
+        await deleteLibraryEntries([...selectedLibrary]);
+    }
+
+    async function deleteLibraryEntries(entryIds) {
+        if (!entryIds.length) return;
+        if (!confirm(`确定从群组库删除 ${entryIds.length} 条记录吗？`)) return;
+
+        try {
+            const response = await fetch('/api/groups/library/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ entry_ids: entryIds })
+            });
+            const data = await response.json();
+            entryIds.forEach(id => selectedLibrary.delete(id));
+            showNotification(data.message, 'success');
+            await loadLibrary();
+        } catch (error) {
+            console.error('删除失败:', error);
+            showNotification('删除失败', 'error');
+        }
+    }
+
+    function openLibraryAddModal() {
+        editingLibraryId = null;
+        document.getElementById('libraryModalTitle').textContent = '添加到群组库';
+        document.getElementById('libraryTargetsField').style.display = '';
+        document.getElementById('libraryTargets').value = '';
+        document.getElementById('libraryTag').value = document.getElementById('libraryTagFilter').value || '';
+        document.getElementById('libraryTitle').value = '';
+        document.getElementById('libraryAddModal').classList.add('open');
+    }
+
+    function openLibraryEditModal(entryId) {
+        const entry = libraryEntries.find(item => item.entry_id === entryId);
+        if (!entry) return;
+
+        editingLibraryId = entryId;
+        document.getElementById('libraryModalTitle').textContent = `编辑 ${entry.raw}`;
+        document.getElementById('libraryTargetsField').style.display = 'none';
+        document.getElementById('libraryTag').value = entry.tag || '';
+        document.getElementById('libraryTitle').value = entry.title || '';
+        document.getElementById('libraryAddModal').classList.add('open');
+    }
+
+    function closeLibraryAddModal() {
+        document.getElementById('libraryAddModal').classList.remove('open');
+        editingLibraryId = null;
+    }
+
+    async function submitLibraryAdd() {
+        const tag = document.getElementById('libraryTag').value.trim();
+        const title = document.getElementById('libraryTitle').value.trim();
+        const targets = document.getElementById('libraryTargets').value;
+
+        if (!editingLibraryId && !targets.trim()) {
+            showNotification('请填写至少一个群链接或用户名', 'warning');
+            return;
+        }
+
+        const button = document.getElementById('libraryAddBtn');
+        button.disabled = true;
+
+        try {
+            const editing = Boolean(editingLibraryId);
+            const response = await fetch(
+                editing ? `/api/groups/library/${editingLibraryId}` : '/api/groups/library',
+                {
+                    method: editing ? 'PUT' : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(editing ? { tag, title } : { targets, tag, title })
+                }
+            );
+            const data = await response.json();
+
+            if (!data.success) {
+                showNotification(data.message || data.detail || '保存失败', 'error');
+                return;
+            }
+
+            if (data.invalid && data.invalid.length) {
+                console.warn('无法识别的目标:', data.invalid);
+            }
+
+            closeLibraryAddModal();
+            showNotification(data.message, 'success');
+            await loadLibrary();
+        } catch (error) {
+            console.error('保存群组库失败:', error);
+            showNotification('保存失败', 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function saveToLibrary(index) {
+        const group = searchResults[index];
+        if (!group) return;
+
+        try {
+            const response = await fetch('/api/groups/library', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ targets: group.join_target, title: group.title || '' })
+            });
+            const data = await response.json();
+            showNotification(data.message, data.success ? 'success' : 'warning');
+            if (data.success) await loadLibrary();
+        } catch (error) {
+            console.error('收藏失败:', error);
+            showNotification('收藏失败', 'error');
+        }
+    }
+
+    function renderJoinLibraryPicker() {
+        const container = document.getElementById('joinLibraryPicker');
+        const entries = filterLibrary(
+            document.getElementById('joinLibrarySearch').value,
+            document.getElementById('joinLibraryTag').value
+        );
+
+        container.innerHTML = entries.length
+            ? entries.map(entry => `
+                <label class="gm-account-item">
+                    <input type="checkbox" class="join-library-check" value="${escapeHtml(entry.raw)}">
+                    <span class="meta">
+                        <span class="phone">${escapeHtml(entry.title || entry.raw)}</span>
+                        <span class="state">${escapeHtml(entry.title ? entry.raw : (entry.tag || KIND_TEXT[entry.kind] || ''))}</span>
+                    </span>
+                </label>
+            `).join('')
+            : '<div class="gm-hint">群组库为空，可以在「群组库」标签页里先添加</div>';
+    }
+
+    function addLibraryPickToTargets() {
+        const picked = Array.from(document.querySelectorAll('.join-library-check:checked')).map(el => el.value);
+        if (!picked.length) {
+            showNotification('请先勾选要加入的群组', 'warning');
+            return;
+        }
+
+        const textarea = document.getElementById('joinTargets');
+        const existing = textarea.value.split('\n').map(line => line.trim()).filter(Boolean);
+        const merged = existing.concat(picked.filter(target => !existing.includes(target)));
+
+        textarea.value = merged.join('\n');
+        document.querySelectorAll('.join-library-check:checked').forEach(el => { el.checked = false; });
+        showNotification(`已添加 ${merged.length - existing.length} 个目标`, 'success');
     }
 
     async function loadAccounts() {
@@ -778,10 +1193,13 @@
                     <td><span class="gm-tag ${group.type}">${group.type === 'group' ? '群组' : '频道'}</span></td>
                     <td>${members}</td>
                     <td>${link}</td>
-                    <td>
+                    <td style="white-space: nowrap;">
                         ${group.joined
                             ? '<span class="gm-tag already">已加入</span>'
                             : `<button class="btn btn-secondary btn-sm" onclick="joinSingle(${index})">加入</button>`}
+                        <button class="btn btn-secondary btn-sm" onclick="saveToLibrary(${index})" title="存入群组库">
+                            <i class="bi bi-bookmark-plus"></i>
+                        </button>
                     </td>
                 </tr>
             `;
@@ -915,6 +1333,7 @@
         if (useSelection && selectedTargets.size) {
             document.getElementById('joinTargets').value = Array.from(selectedTargets.keys()).join('\n');
         }
+        renderJoinLibraryPicker();
         document.getElementById('joinModal').classList.add('open');
     }
 
@@ -962,7 +1381,8 @@
                     targets: targets,
                     delay_min: delayMin,
                     delay_max: delayMax,
-                    max_per_account: parseInt(document.getElementById('maxPerAccount').value, 10) || 20
+                    max_per_account: parseInt(document.getElementById('maxPerAccount').value, 10) || 20,
+                    save_to_library: document.getElementById('saveToLibrary').checked
                 })
             });
             const data = await response.json();
@@ -979,7 +1399,9 @@
 
             closeJoinModal();
             selectedTargets.clear();
+            selectedLibrary.clear();
             renderSearchResults();
+            loadLibrary();
             switchTab('tasks');
         } catch (error) {
             console.error('创建入群任务失败:', error);
@@ -1139,8 +1561,13 @@
         if (event.target === this) closeJoinModal();
     });
 
+    document.getElementById('libraryAddModal').addEventListener('click', function (event) {
+        if (event.target === this) closeLibraryAddModal();
+    });
+
     (async function init() {
         await loadAccounts();
+        await loadLibrary();
         await loadTasks();
     })();
 </script>

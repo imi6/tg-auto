@@ -463,6 +463,9 @@
         border-radius: var(--radius-md);
         color: var(--text-primary);
         font-size: 14px;
+        /* textarea 默认是等宽字体，显式继承才能和输入框一致 */
+        font-family: inherit;
+        line-height: 1.6;
         transition: all var(--transition-base);
     }
     
@@ -842,7 +845,7 @@
         <div class="modal-body">
             <form id="importSessionForm">
                 <div class="form-group">
-                    <label>Session 文件 <span class="required">*</span></label>
+                    <label class="form-label">Session 文件 <span class="required">*</span></label>
                     <input type="file" id="sessionFile" accept=".session" required
                            style="padding: 8px; border: 2px dashed var(--border-color); border-radius: var(--radius-md); width: 100%; cursor: pointer;">
                     <small style="color: var(--text-muted); margin-top: 4px; display: block;">
@@ -851,7 +854,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label>配套的 JSON 文件（可选）</label>
+                    <label class="form-label">配套的 JSON 文件（可选）</label>
                     <input type="file" id="sessionMetaFile" accept=".json"
                            style="padding: 8px; border: 2px dashed var(--border-color); border-radius: var(--radius-md); width: 100%; cursor: pointer;">
                     <small style="color: var(--text-muted); margin-top: 4px; display: block;">
@@ -860,7 +863,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label>代理（可选）</label>
+                    <label class="form-label">代理（可选）</label>
                     <select class="form-input" id="importProxySelect">
                         <option value="">不使用代理</option>
                     </select>
@@ -876,19 +879,19 @@
 
                     <div style="margin-top: 14px;">
                         <div class="form-group">
-                            <label>手机号</label>
-                            <input type="tel" id="importPhone" placeholder="留空则自动读取">
-                            <small style="color: var(--text-muted);">默认从 session 登录的账号信息中自动获取</small>
+                            <label class="form-label">手机号</label>
+                            <input type="tel" class="form-input" id="importPhone" placeholder="留空则自动读取">
+                            <div class="form-help">默认从 session 登录的账号信息中自动获取</div>
                         </div>
 
                         <div class="form-group">
-                            <label>API ID</label>
-                            <input type="number" id="importApiId" placeholder="留空则使用 .env 中的默认值">
+                            <label class="form-label">API ID</label>
+                            <input type="number" class="form-input" id="importApiId" placeholder="留空则使用 .env 中的默认值">
                         </div>
 
                         <div class="form-group" style="margin-bottom: 0;">
-                            <label>API Hash</label>
-                            <input type="text" id="importApiHash" placeholder="留空则使用 .env 中的默认值">
+                            <label class="form-label">API Hash</label>
+                            <input type="text" class="form-input" id="importApiHash" placeholder="留空则使用 .env 中的默认值">
                         </div>
                     </div>
                 </details>
@@ -921,7 +924,7 @@
 <div id="profileModal" class="modal">
     <div class="modal-content" style="max-width: 560px;">
         <div class="modal-header">
-            <h3>编辑账号资料 <span id="profileModalPhone" style="font-weight: 400; color: var(--text-muted);"></span></h3>
+            <h3 class="modal-title">编辑账号资料 <span id="profileModalPhone" style="font-weight: 400; color: var(--text-muted);"></span></h3>
             <button class="modal-close" onclick="hideProfileModal()">
                 <i class="bi bi-x"></i>
             </button>
@@ -933,37 +936,40 @@
 
             <form id="profileForm" style="display: none;">
                 <div class="form-group">
-                    <label>用户名</label>
+                    <label class="form-label">用户名</label>
                     <div style="display: flex; gap: 8px;">
                         <div style="position: relative; flex: 1;">
-                            <span style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted);">@</span>
-                            <input type="text" id="profileUsername" placeholder="留空表示清除用户名"
-                                   style="padding-left: 28px;" oninput="onUsernameInput()">
+                            <span style="position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none;">@</span>
+                            <input type="text" class="form-input" id="profileUsername" placeholder="留空表示清除用户名"
+                                   style="padding-left: 32px;" oninput="onUsernameInput()">
                         </div>
-                        <button type="button" class="btn btn-secondary" id="checkUsernameBtn" onclick="checkUsername()">
+                        <button type="button" class="btn btn-secondary" id="checkUsernameBtn" onclick="checkUsername()"
+                                style="white-space: nowrap;">
                             检查可用
                         </button>
                     </div>
-                    <small id="usernameHint" style="color: var(--text-muted); display: block; margin-top: 6px;">
+                    <small class="form-help" id="usernameHint" style="display: block;">
                         5-32 个字符，字母开头，只能含字母、数字和下划线
                     </small>
                 </div>
 
                 <div class="form-group">
-                    <label>名字</label>
-                    <input type="text" id="profileFirstName" maxlength="64" placeholder="显示名称">
+                    <label class="form-label">名字</label>
+                    <input type="text" class="form-input" id="profileFirstName" maxlength="64" placeholder="显示名称">
                 </div>
 
                 <div class="form-group">
-                    <label>姓氏</label>
-                    <input type="text" id="profileLastName" maxlength="64" placeholder="选填">
+                    <label class="form-label">姓氏</label>
+                    <input type="text" class="form-input" id="profileLastName" maxlength="64" placeholder="选填">
                 </div>
 
                 <div class="form-group">
-                    <label>简介 <span id="aboutCounter" style="float: right; font-weight: 400; color: var(--text-muted);">0 / 70</span></label>
-                    <textarea id="profileAbout" rows="3" maxlength="70" placeholder="选填"
-                              oninput="updateAboutCounter()"
-                              style="width: 100%; resize: vertical;"></textarea>
+                    <label class="form-label">
+                        简介
+                        <span id="aboutCounter" style="float: right; font-weight: 400; color: var(--text-muted);">0 / 70</span>
+                    </label>
+                    <textarea class="form-input" id="profileAbout" rows="3" maxlength="70" placeholder="选填"
+                              oninput="updateAboutCounter()" style="resize: vertical;"></textarea>
                 </div>
 
                 <div class="alert alert-info" style="margin-top: 16px;">
