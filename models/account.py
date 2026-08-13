@@ -15,6 +15,8 @@ class AccountConfig:
     api_hash: str
     proxy: Optional[tuple] = None
     session_name: str = ""
+    # 引用代理管理中的配置；为空时使用上面 proxy 里保存的固定值
+    proxy_id: Optional[str] = None
     
     def __post_init__(self):
         if not self.session_name:
@@ -99,6 +101,7 @@ class Account:
             "api_id": self.config.api_id,
             "api_hash": self.config.api_hash,
             "proxy": self.config.proxy,
+            "proxy_id": self.config.proxy_id,
             "session_name": self.config.session_name,
             "own_user_id": self.own_user_id,
             "monitor_active": self.monitor_active,
@@ -112,7 +115,8 @@ class Account:
             api_id=data["api_id"],
             api_hash=data["api_hash"],
             proxy=data.get("proxy"),
-            session_name=data.get("session_name", "")
+            session_name=data.get("session_name", ""),
+            proxy_id=data.get("proxy_id")
         )
         
         account = cls(

@@ -25,6 +25,7 @@ from core import AccountManager, MonitorEngine
 from core.account_manager import AccountFactory
 from core.join_task_manager import JoinTaskManager
 from core.profile_task_manager import ProfileTaskManager
+from core.proxy_manager import ProxyManager, build_proxy_tuple
 from models import Account, AccountConfig
 from models.config import KeywordConfig, FileConfig, AIMonitorConfig, MatchType, ScheduledMessageConfig
 from models.task import STATUS_SUCCESS
@@ -85,6 +86,8 @@ class AddAccountRequest(BaseModel):
     phone: str
     api_id: int
     api_hash: str
+    # 优先使用代理管理中的配置，没有时才回落到下面手填的代理参数
+    proxy_id: Optional[str] = None
     proxy_type: Optional[str] = None
     proxy_host: Optional[str] = None
     proxy_port: Optional[int] = None
@@ -98,11 +101,21 @@ class ImportSessionRequest(BaseModel):
     phone: Optional[str] = None
     api_id: Optional[int] = None
     api_hash: Optional[str] = None
+    proxy_id: Optional[str] = None
     proxy_type: Optional[str] = None
     proxy_host: Optional[str] = None
     proxy_port: Optional[int] = None
     proxy_username: Optional[str] = None
     proxy_password: Optional[str] = None
+
+
+class ProxyRequest(BaseModel):
+    type: str
+    host: str
+    port: int
+    name: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
 
 
 class VerifyCodeRequest(BaseModel):
@@ -165,6 +178,7 @@ class WebApp:
         self.monitor_engine = MonitorEngine()
         self.status_monitor = StatusMonitor()
         self.config_wizard = ConfigWizard()
+        self.proxy_manager = ProxyManager()
         self.group_service = GroupService()
         self.profile_service = ProfileService()
         self.join_task_manager = JoinTaskManager()
@@ -294,6 +308,33 @@ class WebApp:
             return f"@{username}"
         
         return f"user_{getattr(me, 'id', 'unknown')}"
+    
+    def resolve_proxy_source(self, request_obj: Any) -> tuple:
+        """确定账号要用的代理，返回 (proxy_config, proxy_id)
+
+        选中了代理管理中的配置就用它，否则回落到请求里手填的代理参数。
+        """
+        proxy_id = (getattr(request_obj, 'proxy_id', None) or '').strip()
+        if proxy_id:
+            proxy_config = self.proxy_manager.build_proxy_config(proxy_id)
+            if not proxy_config:
+                raise ValueError(f"代理配置不存在: {proxy_id}")
+            return proxy_config, proxy_id
+        
+        proxy_type = getattr(request_obj, 'proxy_type', None)
+        proxy_host = getattr(request_obj, 'proxy_host', None)
+        proxy_port = getattr(request_obj, 'proxy_port', None)
+        
+        if proxy_type and proxy_host and proxy_port:
+            return {
+                'type': proxy_type,
+                'host': proxy_host,
+                'port': proxy_port,
+                'username': getattr(request_obj, 'proxy_username', None),
+                'password': getattr(request_obj, 'proxy_password', None)
+            }, None
+        
+        return None, None
     
     @staticmethod
     def _cleanup_session_file(session_path: Path):
@@ -461,6 +502,11 @@ class WebApp:
             user = self.get_current_user(request)
             return self.templates.TemplateResponse(request, "groups.html", {"user": user})
         
+        @self.app.get("/proxies", response_class=HTMLResponse)
+        async def proxies_page(request: Request):
+            user = self.get_current_user(request)
+            return self.templates.TemplateResponse(request, "proxies.html", {"user": user})
+        
         @self.app.get("/profiles", response_class=HTMLResponse)
         async def profiles_page(request: Request):
             user = self.get_current_user(request)
@@ -623,6 +669,17 @@ class WebApp:
                         except Exception:
                             pass
                     
+                    proxy_id = account.config.proxy_id
+                    proxy = self.proxy_manager.get_proxy(proxy_id) if proxy_id else None
+                    if proxy:
+                        proxy_name = proxy['name']
+                    elif proxy_id:
+                        proxy_name = "代理已删除"
+                    elif account.config.proxy:
+                        proxy_name = "自定义代理"
+                    else:
+                        proxy_name = ""
+                    
                     account_info = {
                         "account_id": account.account_id,
                         "phone": account.config.phone,
@@ -632,7 +689,9 @@ class WebApp:
                         "monitor_count": monitor_count,
                         "status": status,
                         "status_display": status_display,
-                        "is_valid": is_valid
+                        "is_valid": is_valid,
+                        "proxy_id": proxy_id,
+                        "proxy_name": proxy_name
                     }
                     accounts_info.append(account_info)
                 
@@ -644,22 +703,16 @@ class WebApp:
         @self.app.post("/api/accounts")
         async def add_account(request: Request, add_account_request: AddAccountRequest):
             user = self.get_current_user(request)
+            
             try:
-                proxy_config = None
-                if add_account_request.proxy_type and add_account_request.proxy_host and add_account_request.proxy_port:
-                    proxy_config = {
-                        'type': add_account_request.proxy_type,
-                        'host': add_account_request.proxy_host,
-                        'port': add_account_request.proxy_port,
-                        'username': add_account_request.proxy_username,
-                        'password': add_account_request.proxy_password
-                    }
+                proxy_config, proxy_id = self.resolve_proxy_source(add_account_request)
                 
                 account_config = AccountFactory.create_account_config(
                     phone=add_account_request.phone,
                     api_id=add_account_request.api_id,
                     api_hash=add_account_request.api_hash,
-                    proxy_config=proxy_config
+                    proxy_config=proxy_config,
+                    proxy_id=proxy_id
                 )
                 
                 from telethon import TelegramClient
@@ -703,13 +756,21 @@ class WebApp:
 
         @self.app.post("/api/accounts/upload-session")
         async def upload_session(request: Request, file: UploadFile = Form(...), phone: str = Form(""),
-                                 api_id: str = Form(""), api_hash: str = Form("")):
+                                 api_id: str = Form(""), api_hash: str = Form(""),
+                                 proxy_id: str = Form("")):
             """上传并导入 .session 文件
 
             手机号、API ID、API Hash 均为选填：
             手机号从 session 登录用户信息中读取，API 凭据回退到 .env 默认配置。
             """
             user = self.get_current_user(request)
+            
+            selected_proxy_id = (proxy_id or '').strip()
+            proxy_config = None
+            if selected_proxy_id:
+                proxy_config = self.proxy_manager.build_proxy_config(selected_proxy_id)
+                if not proxy_config:
+                    return {"success": False, "message": f"代理配置不存在: {selected_proxy_id}"}
             
             credentials = self.resolve_api_credentials(api_id, api_hash)
             if not credentials:
@@ -725,13 +786,19 @@ class WebApp:
             # 先落到临时文件，确认 session 有效并拿到手机号后再改名
             temp_path = sessions_dir / f"_importing_{secrets.token_hex(6)}.session"
             client = None
+            telethon_proxy = build_proxy_tuple(proxy_config)
             
             try:
                 content = await file.read()
                 temp_path.write_bytes(content)
                 
                 from telethon import TelegramClient
-                client = TelegramClient(str(temp_path.with_suffix('')), resolved_api_id, resolved_api_hash)
+                client = TelegramClient(
+                    str(temp_path.with_suffix('')),
+                    resolved_api_id,
+                    resolved_api_hash,
+                    proxy=telethon_proxy
+                )
                 await client.connect()
                 
                 if not await client.is_user_authorized():
@@ -755,7 +822,8 @@ class WebApp:
                     phone=account_id,
                     api_id=resolved_api_id,
                     api_hash=resolved_api_hash,
-                    proxy_config=None
+                    proxy_config=proxy_config,
+                    proxy_id=selected_proxy_id or None
                 )
                 # 记录实际路径，否则重启后会去项目根目录找不到该 session
                 account_config.session_name = str(session_path.with_suffix(''))
@@ -763,7 +831,8 @@ class WebApp:
                 client = TelegramClient(
                     account_config.session_name,
                     account_config.api_id,
-                    account_config.api_hash
+                    account_config.api_hash,
+                    proxy=account_config.proxy
                 )
                 await client.connect()
                 
@@ -810,16 +879,7 @@ class WebApp:
                         "message": "缺少 API ID / API Hash，请在请求中提供，或在 .env 中配置 TG_API_ID 和 TG_API_HASH"
                     }
                 resolved_api_id, resolved_api_hash = credentials
-                
-                proxy_config = None
-                if import_req.proxy_type and import_req.proxy_host and import_req.proxy_port:
-                    proxy_config = {
-                        'type': import_req.proxy_type,
-                        'host': import_req.proxy_host,
-                        'port': import_req.proxy_port,
-                        'username': import_req.proxy_username,
-                        'password': import_req.proxy_password
-                    }
+                proxy_config, proxy_id = self.resolve_proxy_source(import_req)
                 
                 # session 文件路径
                 sessions_dir = Path("sessions")
@@ -832,7 +892,8 @@ class WebApp:
                     phone=(import_req.phone or '').strip(),
                     api_id=resolved_api_id,
                     api_hash=resolved_api_hash,
-                    proxy_config=proxy_config
+                    proxy_config=proxy_config,
+                    proxy_id=proxy_id
                 )
                 # 记录实际路径，否则重启后会去项目根目录找不到该 session
                 account_config.session_name = str(session_path.with_suffix(''))
@@ -1669,6 +1730,100 @@ class WebApp:
                 return {"success": False, "message": "任务运行中，请先取消"}
             
             return {"success": True, "message": "任务记录已删除"}
+        
+        @self.app.get("/api/proxies")
+        async def list_proxies(request: Request):
+            user = self.get_current_user(request)
+            
+            proxies = self.proxy_manager.list_proxies()
+            in_use = {}
+            for account in self.account_manager.list_accounts():
+                proxy_id = account.config.proxy_id
+                if proxy_id:
+                    in_use[proxy_id] = in_use.get(proxy_id, 0) + 1
+            
+            for proxy in proxies:
+                proxy['used_by'] = in_use.get(proxy['proxy_id'], 0)
+            
+            return {"success": True, "proxies": proxies}
+        
+        @self.app.post("/api/proxies")
+        async def create_proxy(request: Request, proxy_request: ProxyRequest):
+            user = self.get_current_user(request)
+            
+            data = proxy_request.dict()
+            error = self.proxy_manager.validate(data)
+            if error:
+                return {"success": False, "message": error}
+            
+            return {"success": True, "proxy": self.proxy_manager.add_proxy(data), "message": "代理已添加"}
+        
+        @self.app.put("/api/proxies/{proxy_id}")
+        async def update_proxy(request: Request, proxy_id: str, proxy_request: ProxyRequest):
+            user = self.get_current_user(request)
+            
+            data = proxy_request.dict()
+            error = self.proxy_manager.validate(data)
+            if error:
+                return {"success": False, "message": error}
+            
+            proxy = self.proxy_manager.update_proxy(proxy_id, data)
+            if not proxy:
+                raise HTTPException(status_code=404, detail="代理不存在")
+            
+            return {"success": True, "proxy": proxy, "message": "代理已更新"}
+        
+        @self.app.delete("/api/proxies/{proxy_id}")
+        async def delete_proxy(request: Request, proxy_id: str):
+            user = self.get_current_user(request)
+            
+            using = [
+                account.account_id for account in self.account_manager.list_accounts()
+                if account.config.proxy_id == proxy_id
+            ]
+            if using:
+                return {
+                    "success": False,
+                    "message": f"仍有 {len(using)} 个账号在使用该代理：{', '.join(using[:3])}"
+                                + ("..." if len(using) > 3 else "")
+                }
+            
+            if not self.proxy_manager.delete_proxy(proxy_id):
+                raise HTTPException(status_code=404, detail="代理不存在")
+            
+            return {"success": True, "message": "代理已删除"}
+        
+        @self.app.post("/api/proxies/test")
+        async def test_proxy_config(request: Request, proxy_request: ProxyRequest):
+            """测试尚未保存的代理配置"""
+            user = self.get_current_user(request)
+            
+            data = proxy_request.dict()
+            error = self.proxy_manager.validate(data)
+            if error:
+                return {"success": False, "ok": False, "message": error}
+            
+            credentials = self.resolve_api_credentials(None, None)
+            api_id, api_hash = credentials if credentials else (None, None)
+            
+            result = await self.proxy_manager.test_proxy(data, api_id, api_hash)
+            return {"success": True, **result}
+        
+        @self.app.post("/api/proxies/{proxy_id}/test")
+        async def test_saved_proxy(request: Request, proxy_id: str):
+            user = self.get_current_user(request)
+            
+            proxy_config = self.proxy_manager.build_proxy_config(proxy_id)
+            if not proxy_config:
+                raise HTTPException(status_code=404, detail="代理不存在")
+            
+            credentials = self.resolve_api_credentials(None, None)
+            api_id, api_hash = credentials if credentials else (None, None)
+            
+            result = await self.proxy_manager.test_proxy(proxy_config, api_id, api_hash, proxy_id=proxy_id)
+            self.logger.info(f"代理 {proxy_id} 测试结果: {result['message']}")
+            
+            return {"success": True, **result}
         
         @self.app.get("/api/accounts/{account_id}/profile")
         async def get_account_profile(request: Request, account_id: str):

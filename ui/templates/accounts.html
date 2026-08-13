@@ -507,17 +507,29 @@
                 
                 <div class="form-group">
                     <label class="form-label">代理设置（可选）</label>
-                    <select class="form-input" id="proxyType" onchange="toggleProxyAddress()">
+                    <select class="form-input" id="proxySelect" onchange="toggleManualProxy()">
                         <option value="">不使用代理</option>
-                        <option value="socks5">SOCKS5</option>
-                        <option value="http">HTTP</option>
                     </select>
+                    <div class="form-help">
+                        代理在「代理管理」中维护，可在那里测试连通性
+                    </div>
                 </div>
                 
-                <div class="form-group" id="proxyAddressGroup" style="display: none;">
-                    <label class="form-label">代理地址</label>
-                    <input type="text" class="form-input" id="proxyAddress" placeholder="例如：127.0.0.1:1080">
-                    <div class="form-help">格式：IP地址:端口号</div>
+                <div id="manualProxyGroup" style="display: none;">
+                    <div class="form-group">
+                        <label class="form-label">代理类型</label>
+                        <select class="form-input" id="proxyType">
+                            <option value="socks5">SOCKS5</option>
+                            <option value="socks4">SOCKS4</option>
+                            <option value="http">HTTP</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">代理地址</label>
+                        <input type="text" class="form-input" id="proxyAddress" placeholder="例如：127.0.0.1:1080">
+                        <div class="form-help">格式：IP地址:端口号，仅本次使用且不会保存到代理管理</div>
+                    </div>
                 </div>
                 
                 <div class="form-group">
@@ -628,6 +640,16 @@
                            style="padding: 8px; border: 2px dashed var(--border-color); border-radius: var(--radius-md); width: 100%; cursor: pointer;">
                     <small style="color: var(--text-muted); margin-top: 4px; display: block;">
                         上传 .session 文件（例如：15597438221.session）
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label>代理（可选）</label>
+                    <select class="form-input" id="importProxySelect">
+                        <option value="">不使用代理</option>
+                    </select>
+                    <small style="color: var(--text-muted); display: block; margin-top: 4px;">
+                        在「代理管理」中添加和测试代理
                     </small>
                 </div>
 
@@ -750,6 +772,7 @@
 <script>
     async function showAddAccountModal() {
         document.getElementById('addAccountModal').classList.add('show');
+        loadProxyOptions();
         
         try {
             const response = await fetch('/api/config/defaults');
@@ -770,14 +793,42 @@
         }
     }
     
-    function toggleProxyAddress() {
-        const proxyType = document.getElementById('proxyType').value;
-        const proxyAddressGroup = document.getElementById('proxyAddressGroup');
-        
-        if (proxyType) {
-            proxyAddressGroup.style.display = 'block';
-        } else {
-            proxyAddressGroup.style.display = 'none';
+    let availableProxies = [];
+
+    async function loadProxyOptions() {
+        try {
+            const response = await fetch('/api/proxies');
+            const data = await response.json();
+            availableProxies = data.proxies || [];
+        } catch (error) {
+            console.error('加载代理列表失败:', error);
+            availableProxies = [];
+        }
+
+        const options = ['<option value="">不使用代理</option>'].concat(
+            availableProxies.map(p =>
+                `<option value="${p.proxy_id}">${p.name} (${p.type.toUpperCase()} ${p.host}:${p.port})</option>`
+            )
+        );
+
+        const addSelect = document.getElementById('proxySelect');
+        if (addSelect) {
+            // 添加账号时允许临时填一个不入库的代理，导入 session 只能选已保存的
+            addSelect.innerHTML = options.concat(['<option value="__manual__">手动填写（不保存）</option>']).join('');
+        }
+
+        const importSelect = document.getElementById('importProxySelect');
+        if (importSelect) {
+            importSelect.innerHTML = options.join('');
+        }
+    }
+
+    function toggleManualProxy() {
+        const useManual = document.getElementById('proxySelect').value === '__manual__';
+        const group = document.getElementById('manualProxyGroup');
+
+        group.style.display = useManual ? 'block' : 'none';
+        if (!useManual) {
             document.getElementById('proxyAddress').value = '';
         }
     }
@@ -785,6 +836,7 @@
     function hideAddAccountModal() {
         document.getElementById('addAccountModal').classList.remove('show');
         document.getElementById('addAccountForm').reset();
+        document.getElementById('manualProxyGroup').style.display = 'none';
     }
     
     async function submitAddAccount() {
@@ -801,15 +853,19 @@
             api_hash: formData.get('api_hash')
         };
         
-        const proxyType = document.getElementById('proxyType').value;
-        if (proxyType) {
-            const proxyAddress = document.getElementById('proxyAddress').value;
-            if (proxyAddress && proxyAddress.includes(':')) {
-                const [host, port] = proxyAddress.split(':');
-                data.proxy_type = proxyType;
-                data.proxy_host = host;
-                data.proxy_port = parseInt(port);
+        const selectedProxy = document.getElementById('proxySelect').value;
+        if (selectedProxy === '__manual__') {
+            const proxyAddress = document.getElementById('proxyAddress').value.trim();
+            if (!proxyAddress.includes(':')) {
+                showNotification('请按 IP:端口 的格式填写代理地址', 'error');
+                return;
             }
+            const [host, port] = proxyAddress.split(':');
+            data.proxy_type = document.getElementById('proxyType').value;
+            data.proxy_host = host.trim();
+            data.proxy_port = parseInt(port, 10);
+        } else if (selectedProxy) {
+            data.proxy_id = selectedProxy;
         }
         
         try {
@@ -1040,6 +1096,12 @@
                                         ${account.status_display}
                                     </span>
                                 </div>
+                                ${account.proxy_name ? `
+                                    <div class="account-phone" style="margin-top: 2px;">
+                                        <i class="bi bi-hdd-network"></i>
+                                        ${account.proxy_name}
+                                    </div>
+                                ` : ''}
                             </div>
                         </div>
                         <div class="account-body">
@@ -1199,6 +1261,7 @@
     // 导入 Session 文件相关函数
     function showImportSessionModal() {
         // API 凭据留空即可，后端会回退到 .env 中的默认配置
+        loadProxyOptions();
         document.getElementById('importSessionModal').classList.add('show');
     }
 
@@ -1229,6 +1292,7 @@
             formData.append('phone', phone);
             formData.append('api_id', apiId);
             formData.append('api_hash', apiHash);
+            formData.append('proxy_id', document.getElementById('importProxySelect').value);
 
             const response = await fetch('/api/accounts/upload-session', {
                 method: 'POST',

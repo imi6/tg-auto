@@ -16,6 +16,8 @@ from models import Account, AccountConfig
 from utils.singleton import Singleton
 from utils.logger import get_logger
 
+from .proxy_manager import ProxyManager, build_proxy_tuple
+
 
 class AccountManager(metaclass=Singleton):
     
@@ -44,7 +46,8 @@ class AccountManager(metaclass=Singleton):
                         api_id=account_data['config']['api_id'],
                         api_hash=account_data['config']['api_hash'],
                         proxy=account_data['config'].get('proxy'),
-                        session_name=account_data['config'].get('session_name', account_data['config']['phone'])
+                        session_name=account_data['config'].get('session_name', account_data['config']['phone']),
+                        proxy_id=account_data['config'].get('proxy_id')
                     )
                     
                     account = Account(
@@ -84,6 +87,7 @@ class AccountManager(metaclass=Singleton):
                         'api_id': account.config.api_id,
                         'api_hash': account.config.api_hash,
                         'proxy': account.config.proxy,
+                        'proxy_id': account.config.proxy_id,
                         'session_name': account.config.session_name
                     },
                     'own_user_id': account.own_user_id,
@@ -100,6 +104,21 @@ class AccountManager(metaclass=Singleton):
         except Exception as e:
             self.logger.error(f"保存账号文件失败: {e}")
     
+    def resolve_proxy(self, config: AccountConfig) -> Optional[tuple]:
+        """解析账号实际使用的代理
+
+        引用了代理管理中的配置时以那边为准，这样修改代理后已有账号无需重新登录即可生效。
+        """
+        if config.proxy_id:
+            proxy = ProxyManager().to_telethon_proxy(config.proxy_id)
+            if proxy:
+                return proxy
+            self.logger.warning(
+                f"账号 {config.phone} 引用的代理 {config.proxy_id} 不存在，回退到账号自带的代理设置"
+            )
+        
+        return config.proxy
+    
     async def connect_account(self, account_id: str) -> bool:
         account = self.get_account(account_id)
         if not account:
@@ -110,7 +129,7 @@ class AccountManager(metaclass=Singleton):
                 account.config.session_name,
                 account.config.api_id,
                 account.config.api_hash,
-                proxy=account.config.proxy
+                proxy=self.resolve_proxy(account.config)
             )
             
             await client.connect()
@@ -226,7 +245,7 @@ class AccountManager(metaclass=Singleton):
                 config.session_name,
                 config.api_id,
                 config.api_hash,
-                proxy=config.proxy
+                proxy=self.resolve_proxy(config)
             )
             
             await client.connect()
@@ -325,36 +344,15 @@ class AccountFactory:
         phone: str,
         api_id: int,
         api_hash: str,
-        proxy_config: Optional[Dict] = None
+        proxy_config: Optional[Dict] = None,
+        proxy_id: Optional[str] = None
     ) -> AccountConfig:
-        proxy = None
-        if proxy_config:
-            proxy_type = proxy_config.get('type')
-            proxy_host = proxy_config.get('host')
-            proxy_port = proxy_config.get('port')
-            proxy_user = proxy_config.get('username')
-            proxy_pass = proxy_config.get('password')
-            
-            if proxy_type == 'socks5':
-                socks_type = socks.SOCKS5
-            elif proxy_type == 'socks4':
-                socks_type = socks.SOCKS4
-            elif proxy_type == 'http':
-                socks_type = socks.HTTP
-            else:
-                socks_type = None
-            
-            if socks_type and proxy_host and proxy_port:
-                if proxy_user and proxy_pass:
-                    proxy = (socks_type, proxy_host, proxy_port, True, proxy_user, proxy_pass)
-                else:
-                    proxy = (socks_type, proxy_host, proxy_port)
-        
         return AccountConfig(
             phone=phone,
             api_id=api_id,
             api_hash=api_hash,
-            proxy=proxy
+            proxy=build_proxy_tuple(proxy_config),
+            proxy_id=proxy_id
         )
     
     @staticmethod

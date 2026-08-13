@@ -1,0 +1,623 @@
+{% extends "base.html" %}
+
+{% block title %}代理管理 - TG监控系统{% endblock %}
+
+{% block page_title %}代理管理{% endblock %}
+{% block page_subtitle %}维护 SOCKS5 / HTTP 代理，供账号登录与连接时选用{% endblock %}
+
+{% block extra_css %}
+<style>
+    .px-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+    }
+
+    .px-header h2 {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+
+    .px-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+    }
+
+    .px-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+    }
+
+    .px-table th {
+        text-align: left;
+        padding: 12px 16px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        border-bottom: 1px solid var(--border-color);
+        white-space: nowrap;
+    }
+
+    .px-table td {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border-color);
+        color: var(--text-primary);
+        vertical-align: middle;
+    }
+
+    .px-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .px-table tbody tr:hover {
+        background: var(--bg-tertiary);
+    }
+
+    .px-name {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .px-name .sub {
+        font-size: 12px;
+        color: var(--text-muted);
+        font-family: 'SFMono-Regular', Consolas, monospace;
+    }
+
+    .px-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .px-tag.type {
+        background: rgba(91, 95, 222, 0.15);
+        color: var(--primary-color);
+    }
+
+    .px-tag.ok {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success-color);
+    }
+
+    .px-tag.fail {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--danger-color);
+    }
+
+    .px-tag.unknown {
+        background: rgba(107, 107, 139, 0.2);
+        color: var(--text-secondary);
+    }
+
+    .px-row-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+
+    .px-empty {
+        padding: 56px 20px;
+        text-align: center;
+        color: var(--text-muted);
+    }
+
+    .px-empty i {
+        font-size: 40px;
+        display: block;
+        margin-bottom: 12px;
+        opacity: 0.5;
+    }
+
+    .px-modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+        padding: 20px;
+    }
+
+    .px-modal.open {
+        display: flex;
+    }
+
+    .px-modal-content {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        width: 100%;
+        max-width: 560px;
+        max-height: 90vh;
+        overflow-y: auto;
+        box-shadow: var(--shadow-lg);
+    }
+
+    .px-modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 24px;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .px-modal-header h3 {
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+
+    .px-modal-body {
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+    }
+
+    .px-modal-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 18px 24px;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .px-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .px-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .px-input,
+    .px-select {
+        height: 42px;
+        padding: 0 14px;
+        font-size: 14px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        color: var(--text-primary);
+        transition: border-color 0.2s ease;
+    }
+
+    .px-input:focus,
+    .px-select:focus {
+        outline: none;
+        border-color: var(--primary-color);
+    }
+
+    .px-grid-2 {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 14px;
+    }
+
+    .px-hint {
+        font-size: 12px;
+        color: var(--text-muted);
+        line-height: 1.6;
+    }
+
+    .px-test-result {
+        padding: 12px 14px;
+        border-radius: var(--radius-md);
+        font-size: 13px;
+        line-height: 1.6;
+        display: none;
+    }
+
+    .px-test-result.ok {
+        display: block;
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid var(--success-color);
+        color: var(--success-color);
+    }
+
+    .px-test-result.fail {
+        display: block;
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid var(--danger-color);
+        color: var(--danger-color);
+    }
+
+    .px-test-result.testing {
+        display: block;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        color: var(--text-secondary);
+    }
+
+    .px-spinner {
+        display: inline-block;
+        width: 13px;
+        height: 13px;
+        border: 2px solid var(--border-color);
+        border-top-color: var(--primary-color);
+        border-radius: 50%;
+        animation: px-spin 0.8s linear infinite;
+        vertical-align: -2px;
+    }
+
+    @keyframes px-spin {
+        to { transform: rotate(360deg); }
+    }
+
+    @media (max-width: 768px) {
+        .px-table th:nth-child(4),
+        .px-table td:nth-child(4) {
+            display: none;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="px-header">
+    <h2>代理列表</h2>
+    <button class="btn btn-primary" onclick="openProxyModal()">
+        <i class="bi bi-plus-lg"></i>
+        添加代理
+    </button>
+</div>
+
+<div class="px-card">
+    <div id="proxyList">
+        <div class="px-empty">
+            <i class="bi bi-hdd-network"></i>
+            正在加载...
+        </div>
+    </div>
+</div>
+
+<div class="px-modal" id="proxyModal">
+    <div class="px-modal-content">
+        <div class="px-modal-header">
+            <h3 id="proxyModalTitle">添加代理</h3>
+            <button class="btn-close" onclick="closeProxyModal()"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="px-modal-body">
+            <div class="px-field">
+                <label class="px-label" for="proxyName">名称</label>
+                <input class="px-input" id="proxyName" placeholder="留空则自动用 主机:端口 命名">
+            </div>
+
+            <div class="px-field">
+                <label class="px-label" for="proxyType">类型</label>
+                <select class="px-select" id="proxyType">
+                    <option value="socks5">SOCKS5</option>
+                    <option value="socks4">SOCKS4</option>
+                    <option value="http">HTTP</option>
+                </select>
+            </div>
+
+            <div class="px-grid-2">
+                <div class="px-field">
+                    <label class="px-label" for="proxyHost">主机地址</label>
+                    <input class="px-input" id="proxyHost" placeholder="127.0.0.1 或域名">
+                </div>
+                <div class="px-field">
+                    <label class="px-label" for="proxyPort">端口</label>
+                    <input class="px-input" id="proxyPort" type="number" min="1" max="65535" placeholder="1080">
+                </div>
+            </div>
+
+            <div class="px-grid-2" style="grid-template-columns: 1fr 1fr;">
+                <div class="px-field">
+                    <label class="px-label" for="proxyUsername">用户名</label>
+                    <input class="px-input" id="proxyUsername" placeholder="无需认证请留空">
+                </div>
+                <div class="px-field">
+                    <label class="px-label" for="proxyPassword">密码</label>
+                    <input class="px-input" id="proxyPassword" type="password" placeholder="无需认证请留空">
+                </div>
+            </div>
+
+            <div class="px-hint" id="passwordHint" style="display: none;">
+                密码留空表示沿用原有密码。
+            </div>
+
+            <div class="px-test-result" id="testResult"></div>
+        </div>
+        <div class="px-modal-footer">
+            <button class="btn btn-secondary" id="testBtn" onclick="testCurrentForm()">
+                <i class="bi bi-lightning-charge"></i>
+                测试连接
+            </button>
+            <div style="display: flex; gap: 12px;">
+                <button class="btn btn-secondary" onclick="closeProxyModal()">取消</button>
+                <button class="btn btn-primary" id="saveProxyBtn" onclick="saveProxy()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let proxies = [];
+    let editingProxyId = null;
+
+    const TYPE_LABEL = { socks5: 'SOCKS5', socks4: 'SOCKS4', http: 'HTTP' };
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text == null ? '' : String(text);
+        return div.innerHTML;
+    }
+
+    async function loadProxies() {
+        try {
+            const response = await fetch('/api/proxies');
+            const data = await response.json();
+            proxies = data.proxies || [];
+        } catch (error) {
+            console.error('加载代理失败:', error);
+            showNotification('加载代理列表失败', 'error');
+            proxies = [];
+        }
+        renderProxies();
+    }
+
+    function renderProxies() {
+        const container = document.getElementById('proxyList');
+
+        if (!proxies.length) {
+            container.innerHTML = `
+                <div class="px-empty">
+                    <i class="bi bi-hdd-network"></i>
+                    还没有配置代理，点击右上角「添加代理」开始
+                </div>
+            `;
+            return;
+        }
+
+        const rows = proxies.map(proxy => {
+            const test = proxy.last_test;
+            let testCell = '<span class="px-tag unknown">未测试</span>';
+            if (test) {
+                const time = (test.time || '').replace('T', ' ').split('.')[0];
+                testCell = test.ok
+                    ? `<span class="px-tag ok"><i class="bi bi-check-circle"></i>${test.latency_ms} ms</span>
+                       <div class="px-hint" style="margin-top:4px;">${escapeHtml(time)}</div>`
+                    : `<span class="px-tag fail" title="${escapeHtml(test.message)}"><i class="bi bi-x-circle"></i>失败</span>
+                       <div class="px-hint" style="margin-top:4px;">${escapeHtml(test.message)}</div>`;
+            }
+
+            return `
+                <tr>
+                    <td>
+                        <div class="px-name">
+                            <span>${escapeHtml(proxy.name)}</span>
+                            <span class="sub">${escapeHtml(proxy.host)}:${proxy.port}</span>
+                        </div>
+                    </td>
+                    <td><span class="px-tag type">${TYPE_LABEL[proxy.type] || proxy.type}</span></td>
+                    <td>${proxy.username ? escapeHtml(proxy.username) : '<span style="color: var(--text-muted);">无认证</span>'}</td>
+                    <td>${proxy.used_by ? `${proxy.used_by} 个账号` : '<span style="color: var(--text-muted);">未使用</span>'}</td>
+                    <td>${testCell}</td>
+                    <td>
+                        <div class="px-row-actions">
+                            <button class="btn btn-secondary btn-sm" onclick="testProxy('${proxy.proxy_id}')">测试</button>
+                            <button class="btn btn-secondary btn-sm" onclick="openProxyModal('${proxy.proxy_id}')">编辑</button>
+                            <button class="btn btn-secondary btn-sm" onclick="deleteProxy('${proxy.proxy_id}')">删除</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        container.innerHTML = `
+            <table class="px-table">
+                <thead>
+                    <tr>
+                        <th>名称</th>
+                        <th>类型</th>
+                        <th>认证</th>
+                        <th>使用情况</th>
+                        <th>最近测试</th>
+                        <th style="text-align: right;">操作</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    }
+
+    function openProxyModal(proxyId) {
+        editingProxyId = proxyId || null;
+        const proxy = proxyId ? proxies.find(p => p.proxy_id === proxyId) : null;
+
+        document.getElementById('proxyModalTitle').textContent = proxy ? '编辑代理' : '添加代理';
+        document.getElementById('proxyName').value = proxy ? proxy.name : '';
+        document.getElementById('proxyType').value = proxy ? proxy.type : 'socks5';
+        document.getElementById('proxyHost').value = proxy ? proxy.host : '';
+        document.getElementById('proxyPort').value = proxy ? proxy.port : '';
+        document.getElementById('proxyUsername').value = proxy ? (proxy.username || '') : '';
+        document.getElementById('proxyPassword').value = '';
+        document.getElementById('passwordHint').style.display = (proxy && proxy.has_password) ? 'block' : 'none';
+
+        const result = document.getElementById('testResult');
+        result.className = 'px-test-result';
+        result.textContent = '';
+
+        document.getElementById('proxyModal').classList.add('open');
+    }
+
+    function closeProxyModal() {
+        document.getElementById('proxyModal').classList.remove('open');
+        editingProxyId = null;
+    }
+
+    function collectForm() {
+        const host = document.getElementById('proxyHost').value.trim();
+        const port = parseInt(document.getElementById('proxyPort').value, 10);
+
+        if (!host) {
+            showNotification('请填写代理主机地址', 'warning');
+            return null;
+        }
+        if (!port || port < 1 || port > 65535) {
+            showNotification('请填写有效的端口号', 'warning');
+            return null;
+        }
+
+        return {
+            name: document.getElementById('proxyName').value.trim(),
+            type: document.getElementById('proxyType').value,
+            host: host,
+            port: port,
+            username: document.getElementById('proxyUsername').value.trim(),
+            password: document.getElementById('proxyPassword').value
+        };
+    }
+
+    function showTestResult(state, message) {
+        const result = document.getElementById('testResult');
+        result.className = `px-test-result ${state}`;
+        result.innerHTML = state === 'testing'
+            ? `<span class="px-spinner"></span> ${escapeHtml(message)}`
+            : escapeHtml(message);
+    }
+
+    async function testCurrentForm() {
+        const payload = collectForm();
+        if (!payload) return;
+
+        // 编辑时密码留空意味着沿用原密码，此处无法拿到明文，只能先保存再测试
+        if (editingProxyId && !payload.password) {
+            await testProxy(editingProxyId);
+            return;
+        }
+
+        const button = document.getElementById('testBtn');
+        button.disabled = true;
+        showTestResult('testing', '正在通过该代理连接 Telegram...');
+
+        try {
+            const response = await fetch('/api/proxies/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            showTestResult(data.ok ? 'ok' : 'fail', data.message);
+        } catch (error) {
+            console.error('测试代理失败:', error);
+            showTestResult('fail', '测试请求失败');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function testProxy(proxyId) {
+        const inModal = document.getElementById('proxyModal').classList.contains('open');
+        if (inModal) {
+            document.getElementById('testBtn').disabled = true;
+            showTestResult('testing', '正在通过该代理连接 Telegram...');
+        } else {
+            showNotification('正在测试代理，请稍候...', 'info');
+        }
+
+        try {
+            const response = await fetch(`/api/proxies/${proxyId}/test`, { method: 'POST' });
+            const data = await response.json();
+
+            if (inModal) {
+                showTestResult(data.ok ? 'ok' : 'fail', data.message);
+            } else {
+                showNotification(data.message, data.ok ? 'success' : 'error');
+            }
+            await loadProxies();
+        } catch (error) {
+            console.error('测试代理失败:', error);
+            if (inModal) {
+                showTestResult('fail', '测试请求失败');
+            } else {
+                showNotification('测试请求失败', 'error');
+            }
+        } finally {
+            if (inModal) {
+                document.getElementById('testBtn').disabled = false;
+            }
+        }
+    }
+
+    async function saveProxy() {
+        const payload = collectForm();
+        if (!payload) return;
+
+        const button = document.getElementById('saveProxyBtn');
+        button.disabled = true;
+
+        try {
+            const url = editingProxyId ? `/api/proxies/${editingProxyId}` : '/api/proxies';
+            const response = await fetch(url, {
+                method: editingProxyId ? 'PUT' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                showNotification(data.message || '保存失败', 'error');
+                return;
+            }
+
+            showNotification(data.message, 'success');
+            closeProxyModal();
+            await loadProxies();
+        } catch (error) {
+            console.error('保存代理失败:', error);
+            showNotification('保存请求失败', 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function deleteProxy(proxyId) {
+        const proxy = proxies.find(p => p.proxy_id === proxyId);
+        if (!confirm(`确定删除代理「${proxy ? proxy.name : proxyId}」吗？`)) return;
+
+        try {
+            const response = await fetch(`/api/proxies/${proxyId}`, { method: 'DELETE' });
+            const data = await response.json();
+            showNotification(data.message, data.success ? 'success' : 'warning');
+            if (data.success) await loadProxies();
+        } catch (error) {
+            console.error('删除代理失败:', error);
+            showNotification('删除请求失败', 'error');
+        }
+    }
+
+    document.getElementById('proxyModal').addEventListener('click', function (event) {
+        if (event.target === this) closeProxyModal();
+    });
+
+    loadProxies();
+</script>
+{% endblock %}
