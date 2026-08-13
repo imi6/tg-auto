@@ -665,11 +665,14 @@
                         <label style="cursor: pointer;">
                             <input type="checkbox" id="clearAbout" onchange="onClearToggle('About')"> 清空简介
                         </label>
-                        <span id="batchAboutCounter" style="margin-left: 10px; color: var(--text-muted);">0 / 70</span>
+                        <span id="batchAboutCounter" style="margin-left: 10px; color: var(--text-muted);">0 / 140</span>
                     </span>
                 </label>
-                <textarea class="form-input" id="batchAbout" rows="3" maxlength="70"
+                <textarea class="form-input" id="batchAbout" rows="3" maxlength="140"
                           placeholder="留空表示不修改" oninput="updateBatchCounter()"></textarea>
+                <div class="form-help" id="batchAboutHint">
+                    普通账号简介上限 70 字符，Telegram Premium 账号为 140。
+                </div>
             </div>
 
             <div class="form-help">
@@ -974,10 +977,11 @@
                 <div class="form-group">
                     <label class="form-label">
                         简介
-                        <span id="aboutCounter" style="float: right; font-weight: 400; color: var(--text-muted);">0 / 70</span>
+                        <span id="aboutCounter" style="float: right; font-weight: 400; color: var(--text-muted);"></span>
                     </label>
-                    <textarea class="form-input" id="profileAbout" rows="3" maxlength="70" placeholder="选填"
+                    <textarea class="form-input" id="profileAbout" rows="3" maxlength="140" placeholder="选填"
                               oninput="updateAboutCounter()" style="resize: vertical;"></textarea>
+                    <div class="form-help" id="profileAboutHint"></div>
                 </div>
 
                 <div class="alert alert-info" style="margin-top: 16px;">
@@ -1698,8 +1702,15 @@
             document.getElementById('profileLastName').value = data.profile.last_name || '';
             document.getElementById('profileAbout').value = data.profile.about || '';
 
-            const aboutLimit = (data.profile.limits && data.profile.limits.about) || 70;
+            const limits = data.profile.limits || {};
+            const aboutLimit = limits.about || profileLimits.about_default;
             document.getElementById('profileAbout').maxLength = aboutLimit;
+
+            const premiumLimit = limits.about_premium || profileLimits.about_premium;
+            document.getElementById('profileAboutHint').textContent = data.profile.premium
+                ? `Premium 账号，简介上限 ${aboutLimit} 字符`
+                : `普通账号上限 ${aboutLimit} 字符，Premium 账号可用 ${premiumLimit} 字符`;
+
             updateAboutCounter();
 
             document.getElementById('profileLoading').style.display = 'none';
@@ -1719,7 +1730,7 @@
 
     function updateAboutCounter() {
         const textarea = document.getElementById('profileAbout');
-        const limit = textarea.maxLength > 0 ? textarea.maxLength : 70;
+        const limit = textarea.maxLength > 0 ? textarea.maxLength : profileLimits.about_default;
         document.getElementById('aboutCounter').textContent = `${textarea.value.length} / ${limit}`;
     }
 
@@ -1858,7 +1869,17 @@
 
     function updateBatchCounter() {
         const textarea = document.getElementById('batchAbout');
-        document.getElementById('batchAboutCounter').textContent = `${textarea.value.length} / 70`;
+        const counter = document.getElementById('batchAboutCounter');
+        const length = textarea.value.length;
+
+        counter.textContent = `${length} / ${profileLimits.about_premium}`;
+
+        // 超过普通账号上限时提醒：这段只有 Premium 账号能存下
+        const overDefault = length > profileLimits.about_default;
+        counter.style.color = overDefault ? 'var(--warning-color)' : 'var(--text-muted)';
+        document.getElementById('batchAboutHint').textContent = overDefault
+            ? `已超过 ${profileLimits.about_default} 字符，非 Premium 账号会修改失败`
+            : `普通账号简介上限 ${profileLimits.about_default} 字符，Telegram Premium 账号为 ${profileLimits.about_premium}。`;
     }
 
     function onClearToggle(field) {
@@ -1938,6 +1959,29 @@
     }
 
     let profileTasks = [];
+
+    // 兜底值，页面加载后会用服务端 appConfig 下发的真实上限覆盖
+    let profileLimits = { about_default: 70, about_premium: 140 };
+
+    async function loadProfileLimits() {
+        try {
+            const response = await fetch('/api/profile/limits');
+            const data = await response.json();
+            if (!data.success || !data.limits) return;
+
+            profileLimits = {
+                about_default: data.limits.about_default || profileLimits.about_default,
+                about_premium: data.limits.about_premium || profileLimits.about_premium
+            };
+
+            const batchAbout = document.getElementById('batchAbout');
+            batchAbout.maxLength = profileLimits.about_premium;
+            document.getElementById('profileAbout').maxLength = profileLimits.about_premium;
+            updateBatchCounter();
+        } catch (error) {
+            console.error('读取资料长度限制失败:', error);
+        }
+    }
 
     const PROFILE_STATUS_TEXT = { success: '成功', already: '无变化', pending: '处理中', failed: '失败' };
     const PROFILE_TASK_STATE_TEXT = {
@@ -2098,5 +2142,6 @@
 
     loadAccounts();
     loadProfileTasks();
+    loadProfileLimits();
 </script>
 {% endblock %}

@@ -37,7 +37,13 @@ from models.task import STATUS_SUCCESS
 from monitors import monitor_factory, AIMonitorBuilder
 from services import AIService
 from services.group_service import GroupService
-from services.profile_service import ProfileService
+from services.profile_service import (
+    ABOUT_MAX,
+    ABOUT_MAX_PREMIUM,
+    FIRST_NAME_MAX,
+    LAST_NAME_MAX,
+    ProfileService,
+)
 from utils.logger import get_logger
 from .status_monitor import StatusMonitor
 from .config_wizard import ConfigWizard
@@ -2184,6 +2190,33 @@ class WebApp:
             
             result = await self.profile_service.check_username(client, check_request.username)
             return {"success": True, **result}
+        
+        @self.app.get("/api/profile/limits")
+        async def get_profile_limits(request: Request):
+            user = self.get_current_user(request)
+            
+            # 批量修改面向多个账号，拿不到具体账号的 Premium 状态，
+            # 这里只提供两档上限，由前端提示用户，实际校验在执行时按账号进行
+            limits = {'default': ABOUT_MAX, 'premium': ABOUT_MAX_PREMIUM}
+            
+            for account in self.account_manager.list_accounts():
+                if not (account.client and account.client.is_connected()):
+                    continue
+                try:
+                    limits = await self.profile_service.get_about_limits(account.client)
+                except Exception as e:
+                    self.logger.debug(f"读取简介长度限制失败: {e}")
+                break
+            
+            return {
+                "success": True,
+                "limits": {
+                    "first_name": FIRST_NAME_MAX,
+                    "last_name": LAST_NAME_MAX,
+                    "about_default": limits['default'],
+                    "about_premium": limits['premium'],
+                }
+            }
         
         @self.app.post("/api/profile/batch-tasks")
         async def create_profile_task(request: Request, batch_request: BatchProfileRequest):

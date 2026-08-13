@@ -13,6 +13,7 @@ from telethon.tl.functions.account import (
     UpdateProfileRequest,
     UpdateUsernameRequest,
 )
+from telethon.tl.functions.help import GetAppConfigRequest
 from telethon.tl.functions.users import GetFullUserRequest
 
 from models.task import STATUS_FAILED, STATUS_FLOOD, STATUS_SUCCESS
@@ -34,10 +35,11 @@ UsernamePurchaseAvailableError = _error('UsernamePurchaseAvailableError')
 AboutTooLongError = _error('AboutTooLongError')
 FirstNameInvalidError = _error('FirstnameInvalidError')
 
-# Telegram 侧的字段长度限制（简介 70 字符，Premium 账号为 140）
+# Telegram 侧的字段长度限制。简介上限由服务端 appConfig 下发，这里的常量只作为拉取失败时的兜底
 FIRST_NAME_MAX = 64
 LAST_NAME_MAX = 64
 ABOUT_MAX = 70
+ABOUT_MAX_PREMIUM = 140
 USERNAME_MIN = 5
 USERNAME_MAX = 32
 
@@ -49,6 +51,64 @@ class ProfileService:
 
     def __init__(self):
         self.logger = get_logger(__name__)
+        self._about_limits: Optional[Dict[str, int]] = None
+
+    # ------------------------------------------------------------------ 服务端限制
+
+    @staticmethod
+    def _app_config_int(config, key: str) -> Optional[int]:
+        for item in getattr(config, 'value', None) or []:
+            if getattr(item, 'key', None) != key:
+                continue
+            raw = getattr(getattr(item, 'value', None), 'value', None)
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    async def get_about_limits(self, client) -> Dict[str, int]:
+        """读取简介长度上限，取不到就用兜底常量
+
+        Telegram 把上限放在 appConfig 里，普通账号和 Premium 账号是两个值，
+        且官方会调整，所以优先问服务端。结果按实例缓存，避免每次改资料都多一次请求。
+        """
+        if self._about_limits is not None:
+            return self._about_limits
+
+        limits = {'default': ABOUT_MAX, 'premium': ABOUT_MAX_PREMIUM}
+
+        try:
+            config = await client(GetAppConfigRequest(hash=0))
+            values = getattr(config, 'config', None)
+
+            default_limit = self._app_config_int(values, 'about_length_limit_default')
+            premium_limit = self._app_config_int(values, 'about_length_limit_premium')
+
+            if default_limit:
+                limits['default'] = default_limit
+            if premium_limit:
+                limits['premium'] = premium_limit
+        except Exception as e:
+            self.logger.debug(f"读取 appConfig 简介限制失败，使用默认值: {e}")
+
+        # Premium 上限不应该比普通账号还低，异常数据直接兜底
+        limits['premium'] = max(limits['premium'], limits['default'])
+
+        self._about_limits = limits
+        return limits
+
+    async def resolve_about_limit(self, client, premium: Optional[bool] = None) -> int:
+        """按账号是否 Premium 返回它实际可用的简介长度"""
+        if premium is None:
+            try:
+                me = await client.get_me()
+                premium = bool(getattr(me, 'premium', False))
+            except Exception:
+                premium = False
+
+        limits = await self.get_about_limits(client)
+        return limits['premium'] if premium else limits['default']
 
     # ------------------------------------------------------------------ 校验
 
@@ -73,14 +133,22 @@ class ProfileService:
 
     @staticmethod
     def validate_profile_fields(
-        first_name: Optional[str], last_name: Optional[str], about: Optional[str]
+        first_name: Optional[str],
+        last_name: Optional[str],
+        about: Optional[str],
+        about_max: int = ABOUT_MAX_PREMIUM
     ) -> Optional[str]:
+        """校验资料字段
+
+        约定 about_max 默认取 Premium 上限：调用方拿不到具体账号时先按最宽的放行，
+        真正执行修改时再按该账号的实际上限二次校验。
+        """
         if first_name is not None and len(first_name) > FIRST_NAME_MAX:
             return f"名字不能超过 {FIRST_NAME_MAX} 个字符"
         if last_name is not None and len(last_name) > LAST_NAME_MAX:
             return f"姓氏不能超过 {LAST_NAME_MAX} 个字符"
-        if about is not None and len(about) > ABOUT_MAX:
-            return f"简介不能超过 {ABOUT_MAX} 个字符"
+        if about is not None and len(about) > about_max:
+            return f"简介不能超过 {about_max} 个字符"
         if first_name is not None and not first_name.strip():
             return "名字不能为空"
 
@@ -104,6 +172,9 @@ class ProfileService:
             if usernames:
                 username = getattr(usernames[0], 'username', None)
 
+        premium = bool(getattr(me, 'premium', False))
+        about_limits = await self.get_about_limits(client)
+
         return {
             'user_id': me.id,
             'phone': getattr(me, 'phone', '') or '',
@@ -111,11 +182,13 @@ class ProfileService:
             'first_name': getattr(me, 'first_name', '') or '',
             'last_name': getattr(me, 'last_name', '') or '',
             'about': about,
-            'premium': bool(getattr(me, 'premium', False)),
+            'premium': premium,
             'limits': {
                 'first_name': FIRST_NAME_MAX,
                 'last_name': LAST_NAME_MAX,
-                'about': ABOUT_MAX,
+                'about': about_limits['premium'] if premium else about_limits['default'],
+                'about_default': about_limits['default'],
+                'about_premium': about_limits['premium'],
             }
         }
 
@@ -163,7 +236,24 @@ class ProfileService:
         if first_name is None and last_name is None and about is None:
             return {'status': STATUS_SUCCESS, 'message': '没有需要修改的字段'}
 
-        error = self.validate_profile_fields(first_name, last_name, about)
+        about_max = ABOUT_MAX_PREMIUM
+        if about is not None:
+            limits = await self.get_about_limits(client)
+            premium = False
+            try:
+                premium = bool(getattr(await client.get_me(), 'premium', False))
+            except Exception as e:
+                self.logger.debug(f"判断 Premium 状态失败，按普通账号处理: {e}")
+
+            about_max = limits['premium'] if premium else limits['default']
+            if len(about) > about_max:
+                hint = '' if premium else f"，Premium 账号可用 {limits['premium']} 字符"
+                return {
+                    'status': STATUS_FAILED,
+                    'message': f"简介超出 {about_max} 字符限制（当前 {len(about)}）{hint}"
+                }
+
+        error = self.validate_profile_fields(first_name, last_name, about, about_max=about_max)
         if error:
             return {'status': STATUS_FAILED, 'message': error}
 
@@ -190,7 +280,7 @@ class ProfileService:
                 'message': f"触发频率限制，需等待 {seconds} 秒"
             }
         except AboutTooLongError:
-            return {'status': STATUS_FAILED, 'message': f"简介超出 {ABOUT_MAX} 字符限制"}
+            return {'status': STATUS_FAILED, 'message': f"简介超出 {about_max} 字符限制"}
         except FirstNameInvalidError:
             return {'status': STATUS_FAILED, 'message': '名字不合法'}
         except Exception as e:
