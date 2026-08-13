@@ -582,10 +582,11 @@ class WebApp:
             user = self.get_current_user(request)
             return self.templates.TemplateResponse(request, "proxies.html", {"user": user})
         
-        @self.app.get("/profiles", response_class=HTMLResponse)
+        @self.app.get("/profiles")
         async def profiles_page(request: Request):
-            user = self.get_current_user(request)
-            return self.templates.TemplateResponse(request, "profiles.html", {"user": user})
+            # 资料管理已并入账号管理，保留跳转避免旧书签 404
+            self.get_current_user(request)
+            return RedirectResponse(url="/accounts", status_code=301)
         
         @self.app.get("/config-export", response_class=HTMLResponse)
         async def config_export_page(request: Request):

@@ -3,7 +3,7 @@
 {% block title %}账号管理 - TG监控系统{% endblock %}
 
 {% block page_title %}账号管理{% endblock %}
-{% block page_subtitle %}管理和配置您的Telegram账号{% endblock %}
+{% block page_subtitle %}管理账号，并批量设置名字与简介{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -29,6 +29,129 @@
         border-color: var(--primary-color);
     }
     
+    .account-card.selected {
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 1px var(--primary-color);
+    }
+
+    .account-select {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        z-index: 2;
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+        accent-color: var(--primary-color);
+    }
+
+    .bulk-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        padding: 14px 18px;
+        margin-bottom: 20px;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+    }
+
+    .bulk-bar .bulk-links {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .bulk-bar button.btn-link {
+        background: none;
+        border: none;
+        color: var(--primary-color);
+        cursor: pointer;
+        font-size: 13px;
+        padding: 0;
+    }
+
+    .pm-tag {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .pm-tag.success { background: rgba(16, 185, 129, 0.15); color: var(--success-color); }
+    .pm-tag.failed { background: rgba(239, 68, 68, 0.15); color: var(--danger-color); }
+    .pm-tag.pending { background: rgba(245, 158, 11, 0.15); color: var(--warning-color); }
+    .pm-tag.already { background: rgba(107, 107, 139, 0.2); color: var(--text-secondary); }
+
+    .pm-task {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 20px;
+        margin-bottom: 16px;
+    }
+
+    .pm-task-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+    }
+
+    .pm-task-id {
+        font-size: 13px;
+        font-family: 'SFMono-Regular', Consolas, monospace;
+        color: var(--text-secondary);
+    }
+
+    .pm-progress {
+        height: 8px;
+        background: var(--bg-tertiary);
+        border-radius: 999px;
+        overflow: hidden;
+        margin-bottom: 12px;
+    }
+
+    .pm-progress-bar {
+        height: 100%;
+        background: var(--primary-gradient);
+        transition: width 0.3s ease;
+    }
+
+    .pm-result-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 0;
+        font-size: 13px;
+        border-bottom: 1px dashed var(--border-color);
+    }
+
+    .pm-result-line:last-child {
+        border-bottom: none;
+    }
+
+    .pm-result-line .account {
+        font-family: 'SFMono-Regular', Consolas, monospace;
+        color: var(--text-primary);
+    }
+
+    .pm-result-line .message {
+        color: var(--text-muted);
+        font-size: 12px;
+        text-align: right;
+    }
+
     .account-card.connecting {
         border-color: var(--warning-color);
     }
@@ -466,6 +589,20 @@
     </div>
 </div>
 
+<div class="bulk-bar" id="bulkBar" style="display: none;">
+    <div class="bulk-links">
+        <button type="button" class="btn-link" onclick="toggleAllAccounts(true)">全选</button>
+        <button type="button" class="btn-link" onclick="toggleAllAccounts(false)">全不选</button>
+        <span>已选中 <strong id="selectedAccountCount">0</strong> 个账号</span>
+    </div>
+    <div style="display: flex; gap: 10px;">
+        <button class="btn btn-primary btn-sm" onclick="showBatchProfileModal()">
+            <i class="bi bi-person-badge"></i>
+            批量设置名字与简介
+        </button>
+    </div>
+</div>
+
 <div class="accounts-grid" id="accountsGrid">
     
     <div class="add-account-card" onclick="showAddAccountModal()">
@@ -474,6 +611,76 @@
         </div>
         <div class="add-account-text">添加新账号</div>
         <div class="add-account-subtext">点击添加Telegram账号</div>
+    </div>
+</div>
+
+<div id="batchTaskSection" style="display: none; margin-bottom: 32px;">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+        <h3 style="font-size: 15px; font-weight: 700; color: var(--text-primary);">批量资料修改记录</h3>
+        <button class="btn btn-secondary btn-sm" onclick="loadProfileTasks()">
+            <i class="bi bi-arrow-clockwise"></i>
+            刷新
+        </button>
+    </div>
+    <div id="batchTaskList"></div>
+</div>
+
+<div class="modal" id="batchProfileModal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">批量设置名字与简介</h3>
+            <button class="modal-close" onclick="hideBatchProfileModal()">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+
+        <div class="modal-body">
+            <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 18px;">
+                将修改选中的 <strong id="batchTargetCount">0</strong> 个账号。
+                留空的字段保持原样，要清空某个字段请勾选对应的「清空」。
+            </p>
+
+            <div class="form-group">
+                <label class="form-label">名字</label>
+                <input type="text" class="form-input" id="batchFirstName" maxlength="64" placeholder="留空表示不修改">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">
+                    姓氏
+                    <label style="float: right; font-weight: 400; cursor: pointer;">
+                        <input type="checkbox" id="clearLastName" onchange="onClearToggle('LastName')"> 清空姓氏
+                    </label>
+                </label>
+                <input type="text" class="form-input" id="batchLastName" maxlength="64" placeholder="留空表示不修改">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">
+                    简介
+                    <span style="float: right; font-weight: 400;">
+                        <label style="cursor: pointer;">
+                            <input type="checkbox" id="clearAbout" onchange="onClearToggle('About')"> 清空简介
+                        </label>
+                        <span id="batchAboutCounter" style="margin-left: 10px; color: var(--text-muted);">0 / 70</span>
+                    </span>
+                </label>
+                <textarea class="form-input" id="batchAbout" rows="3" maxlength="70"
+                          placeholder="留空表示不修改" oninput="updateBatchCounter()"></textarea>
+            </div>
+
+            <div class="form-help">
+                用户名全局唯一，不能批量设置，请点击账号卡片上的「资料」逐个修改。
+            </div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="hideBatchProfileModal()">取消</button>
+            <button class="btn btn-primary" id="submitBatchBtn" onclick="submitBatchProfile()">
+                <i class="bi bi-pencil-square"></i>
+                开始修改
+            </button>
+        </div>
     </div>
 </div>
 
@@ -1092,6 +1299,10 @@
                     const card = document.createElement('div');
                     card.className = `account-card ${statusClass}`;
                     card.innerHTML = `
+                        <input type="checkbox" class="account-select" value="${account.account_id}"
+                               ${account.is_valid ? '' : 'disabled'}
+                               title="${account.is_valid ? '选中后可批量设置资料' : '账号未登录，无法批量设置资料'}"
+                               onchange="onAccountSelectChange(this)">
                         <div class="account-header">
                             <div class="account-avatar">
                                 ${account.name ? account.name.charAt(0).toUpperCase() : account.phone.slice(-2)}
@@ -1173,11 +1384,53 @@
             }
             
             updateAccountStats(accounts);
+            restoreAccountSelection(accounts);
             
         } catch (error) {
             console.error('Failed to load accounts:', error);
             showNotification('加载账号列表失败', 'error');
         }
+    }
+    
+    let selectedAccountIds = new Set();
+    
+    function restoreAccountSelection(accounts) {
+        // 列表会定时刷新，重建 DOM 后要把之前的勾选还原回去
+        const available = new Set(accounts.filter(a => a.is_valid).map(a => a.account_id));
+        selectedAccountIds = new Set([...selectedAccountIds].filter(id => available.has(id)));
+        
+        document.querySelectorAll('.account-select').forEach(checkbox => {
+            checkbox.checked = selectedAccountIds.has(checkbox.value);
+            syncCardSelectedStyle(checkbox);
+        });
+        
+        document.getElementById('bulkBar').style.display = available.size ? 'flex' : 'none';
+        updateSelectedCount();
+    }
+    
+    function syncCardSelectedStyle(checkbox) {
+        checkbox.closest('.account-card').classList.toggle('selected', checkbox.checked);
+    }
+    
+    function onAccountSelectChange(checkbox) {
+        if (checkbox.checked) {
+            selectedAccountIds.add(checkbox.value);
+        } else {
+            selectedAccountIds.delete(checkbox.value);
+        }
+        syncCardSelectedStyle(checkbox);
+        updateSelectedCount();
+    }
+    
+    function toggleAllAccounts(checked) {
+        document.querySelectorAll('.account-select:not(:disabled)').forEach(checkbox => {
+            checkbox.checked = checked;
+            onAccountSelectChange(checkbox);
+        });
+    }
+    
+    function updateSelectedCount() {
+        document.getElementById('selectedAccountCount').textContent = selectedAccountIds.size;
     }
     
     function updateAccountStats(accounts) {
@@ -1498,6 +1751,250 @@
         }
     }
 
+    function showBatchProfileModal() {
+        if (!selectedAccountIds.size) {
+            showNotification('请先勾选要修改的账号', 'warning');
+            return;
+        }
+
+        document.getElementById('batchTargetCount').textContent = selectedAccountIds.size;
+        ['batchFirstName', 'batchLastName', 'batchAbout'].forEach(id => {
+            const field = document.getElementById(id);
+            field.value = '';
+            field.disabled = false;
+        });
+        document.getElementById('clearLastName').checked = false;
+        document.getElementById('clearAbout').checked = false;
+        updateBatchCounter();
+
+        document.getElementById('batchProfileModal').classList.add('show');
+    }
+
+    function hideBatchProfileModal() {
+        document.getElementById('batchProfileModal').classList.remove('show');
+    }
+
+    function updateBatchCounter() {
+        const textarea = document.getElementById('batchAbout');
+        document.getElementById('batchAboutCounter').textContent = `${textarea.value.length} / 70`;
+    }
+
+    function onClearToggle(field) {
+        const checkbox = document.getElementById(`clear${field}`);
+        const input = document.getElementById(`batch${field}`);
+        input.disabled = checkbox.checked;
+        if (checkbox.checked) {
+            input.value = '';
+            if (field === 'About') updateBatchCounter();
+        }
+    }
+
+    async function submitBatchProfile() {
+        const accountIds = [...selectedAccountIds];
+        if (!accountIds.length) {
+            showNotification('请先勾选要修改的账号', 'warning');
+            return;
+        }
+
+        const firstName = document.getElementById('batchFirstName').value.trim();
+        const lastName = document.getElementById('batchLastName').value.trim();
+        const about = document.getElementById('batchAbout').value;
+
+        // 字段缺省表示不修改，空字符串表示清空
+        const payload = { account_ids: accountIds };
+        if (firstName) payload.first_name = firstName;
+        if (document.getElementById('clearLastName').checked) {
+            payload.last_name = '';
+        } else if (lastName) {
+            payload.last_name = lastName;
+        }
+        if (document.getElementById('clearAbout').checked) {
+            payload.about = '';
+        } else if (about.trim()) {
+            payload.about = about;
+        }
+
+        const changes = [];
+        if (payload.first_name !== undefined) changes.push(`名字 → ${payload.first_name}`);
+        if (payload.last_name !== undefined) changes.push(`姓氏 → ${payload.last_name || '（清空）'}`);
+        if (payload.about !== undefined) changes.push(`简介 → ${payload.about || '（清空）'}`);
+
+        if (!changes.length) {
+            showNotification('请至少填写一个要修改的字段', 'warning');
+            return;
+        }
+
+        if (!confirm(`将修改 ${accountIds.length} 个账号：\n${changes.join('\n')}\n\n确定继续吗？`)) {
+            return;
+        }
+
+        const button = document.getElementById('submitBatchBtn');
+        button.disabled = true;
+
+        try {
+            const response = await fetch('/api/profile/batch-tasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                showNotification(data.message || '任务创建失败', 'error');
+                return;
+            }
+
+            hideBatchProfileModal();
+            showNotification(data.message, 'success');
+            await loadProfileTasks();
+        } catch (error) {
+            console.error('批量修改失败:', error);
+            showNotification('任务创建请求失败', 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    let profileTasks = [];
+
+    const PROFILE_STATUS_TEXT = { success: '成功', already: '无变化', pending: '处理中', failed: '失败' };
+    const PROFILE_TASK_STATE_TEXT = {
+        running: '执行中', completed: '已完成', cancelled: '已取消', interrupted: '已中断'
+    };
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text == null ? '' : String(text);
+        return div.innerHTML;
+    }
+
+    async function loadProfileTasks() {
+        try {
+            const response = await fetch('/api/profile/batch-tasks?limit=10');
+            const data = await response.json();
+            profileTasks = data.tasks || [];
+        } catch (error) {
+            console.error('加载批量任务失败:', error);
+            profileTasks = [];
+        }
+        renderProfileTasks();
+    }
+
+    function renderProfileTasks() {
+        const section = document.getElementById('batchTaskSection');
+        section.style.display = profileTasks.length ? 'block' : 'none';
+        if (!profileTasks.length) return;
+
+        document.getElementById('batchTaskList').innerHTML = profileTasks.map(renderProfileTask).join('');
+    }
+
+    function renderProfileTask(task) {
+        const summary = task.summary || {};
+        const total = summary.total || 0;
+        const done = summary.done || 0;
+        const percent = total ? Math.round((done / total) * 100) : 0;
+        const running = task.status === 'running';
+
+        const fieldLabels = { first_name: '名字', last_name: '姓氏', about: '简介' };
+        const changed = (task.changed_fields || []).map(f => fieldLabels[f] || f).join('、');
+
+        const lines = Object.values(task.accounts || {}).map(state => {
+            const item = (state.items || [])[0];
+            if (!item) {
+                return `
+                    <div class="pm-result-line">
+                        <span class="account">${escapeHtml(state.account_id)}</span>
+                        <span class="message">${escapeHtml(running ? '等待中' : (state.status || ''))}</span>
+                    </div>
+                `;
+            }
+            return `
+                <div class="pm-result-line">
+                    <span class="account">${escapeHtml(state.account_id)}</span>
+                    <span style="display: flex; align-items: center; gap: 10px;">
+                        <span class="message">${escapeHtml(item.message)}</span>
+                        <span class="pm-tag ${item.status}">${PROFILE_STATUS_TEXT[item.status] || item.status}</span>
+                    </span>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="pm-task">
+                <div class="pm-task-head">
+                    <div>
+                        <div class="pm-task-id">${escapeHtml(task.task_id)}</div>
+                        <div style="font-size: 12px; color: var(--text-muted);">
+                            ${escapeHtml((task.created_at || '').replace('T', ' ').split('.')[0])}
+                            ${changed ? ' · 修改了 ' + escapeHtml(changed) : ''}
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="pm-tag ${running ? 'pending' : (task.status === 'completed' ? 'success' : 'already')}">
+                            ${PROFILE_TASK_STATE_TEXT[task.status] || task.status}
+                        </span>
+                        ${running
+                            ? `<button class="btn btn-secondary btn-sm" onclick="cancelProfileTask('${task.task_id}')">取消</button>`
+                            : `<button class="btn btn-secondary btn-sm" onclick="deleteProfileTask('${task.task_id}')">删除</button>`}
+                    </div>
+                </div>
+
+                <div class="pm-progress"><div class="pm-progress-bar" style="width: ${percent}%;"></div></div>
+
+                <div style="display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;">
+                    <span>进度 ${done} / ${total}</span>
+                    <span style="color: var(--success-color);">成功 ${summary.success || 0}</span>
+                    <span style="color: var(--danger-color);">失败 ${summary.failed || 0}</span>
+                </div>
+
+                ${lines}
+            </div>
+        `;
+    }
+
+    async function cancelProfileTask(taskId) {
+        try {
+            const response = await fetch(`/api/profile/batch-tasks/${taskId}/cancel`, { method: 'POST' });
+            const data = await response.json();
+            showNotification(data.message, data.success ? 'success' : 'warning');
+        } catch (error) {
+            console.error('取消任务失败:', error);
+            showNotification('取消任务失败', 'error');
+        }
+    }
+
+    async function deleteProfileTask(taskId) {
+        if (!confirm('确定删除这条修改记录吗？')) return;
+
+        try {
+            const response = await fetch(`/api/profile/batch-tasks/${taskId}`, { method: 'DELETE' });
+            const data = await response.json();
+            if (data.success) {
+                profileTasks = profileTasks.filter(t => t.task_id !== taskId);
+                renderProfileTasks();
+            }
+            showNotification(data.message, data.success ? 'success' : 'warning');
+        } catch (error) {
+            console.error('删除记录失败:', error);
+            showNotification('删除记录失败', 'error');
+        }
+    }
+
+    // 由 base.html 的 WebSocket 消息分发调用
+    window.handleProfileTaskUpdate = function (task) {
+        const index = profileTasks.findIndex(t => t.task_id === task.task_id);
+        if (index >= 0) {
+            profileTasks[index] = task;
+        } else {
+            profileTasks.unshift(task);
+        }
+        renderProfileTasks();
+
+        if (task.status !== 'running') {
+            loadAccounts();
+        }
+    };
+
     // 模态框点击外部关闭
     document.getElementById('importSessionModal').addEventListener('click', function(e) {
         if (e.target === this) {
@@ -1511,6 +2008,13 @@
         }
     });
 
+    document.getElementById('batchProfileModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            hideBatchProfileModal();
+        }
+    });
+
     loadAccounts();
+    loadProfileTasks();
 </script>
 {% endblock %}
