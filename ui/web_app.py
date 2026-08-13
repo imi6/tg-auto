@@ -7,14 +7,16 @@ import asyncio
 import json
 import re
 import secrets
+import zipfile
 import pytz
 from typing import Dict, List, Any, Optional, Union
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime
 import io
 from apscheduler.triggers.cron import CronTrigger
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, HTTPException, Depends, Cookie, UploadFile
+from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Request, Form, HTTPException, Depends,
+                     Cookie, UploadFile, File)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, RedirectResponse
@@ -443,6 +445,162 @@ class WebApp:
         self._cleanup_session_file(target)
         source.replace(target)
     
+    @staticmethod
+    async def collect_session_uploads(files: List[UploadFile]) -> tuple:
+        """把上传的文件整理成 {文件名: 内容}
+        
+        支持直接选中的 .session/.json，也支持 zip 压缩包；两者按文件名（不含后缀）配对。
+        """
+        sessions: Dict[str, bytes] = {}
+        metas: Dict[str, bytes] = {}
+        ignored: List[str] = []
+        
+        def take(name: str, content: bytes):
+            stem = PurePosixPath(name.replace('\\', '/')).stem
+            suffix = PurePosixPath(name.replace('\\', '/')).suffix.lower()
+            
+            if suffix == '.session':
+                sessions[stem] = content
+            elif suffix == '.json':
+                metas[stem] = content
+            else:
+                ignored.append(name)
+        
+        for upload in files:
+            content = await upload.read()
+            filename = upload.filename or ''
+            
+            if filename.lower().endswith('.zip'):
+                try:
+                    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                        for info in archive.infolist():
+                            if info.is_dir():
+                                continue
+                            take(info.filename, archive.read(info))
+                except zipfile.BadZipFile:
+                    ignored.append(filename)
+                continue
+            
+            take(filename, content)
+        
+        return sessions, metas, ignored
+    
+    async def import_session_bytes(
+        self,
+        content: bytes,
+        filename: str,
+        meta_bytes: Optional[bytes] = None,
+        phone: str = "",
+        api_id: str = "",
+        api_hash: str = "",
+        proxy_config: Optional[Dict] = None,
+        proxy_id: str = ""
+    ) -> Dict[str, Any]:
+        """导入一个 session 文件，单个上传与批量导入共用"""
+        try:
+            metadata = parse_session_metadata(meta_bytes) if meta_bytes else {}
+        except Exception as e:
+            self.logger.warning(f"解析 {filename} 的配套 json 失败: {e}")
+            metadata = {}
+        
+        # 优先级：表单填写 > 配套 json > .env 默认值 > 已有账号的凭据
+        credentials = self.resolve_api_credentials(
+            api_id or metadata.get('api_id'),
+            api_hash or metadata.get('api_hash')
+        )
+        if not credentials:
+            return {
+                "success": False,
+                "message": "缺少 API ID / API Hash：请上传该 session 配套的 .json 文件，"
+                           "或展开「高级选项」手动填写，也可在 .env 中配置 TG_API_ID 和 TG_API_HASH"
+            }
+        resolved_api_id, resolved_api_hash = credentials
+        device_params = metadata.get('device_params') or None
+        
+        sessions_dir = Path("sessions")
+        sessions_dir.mkdir(exist_ok=True)
+        
+        # 先落到临时文件，确认 session 有效并拿到手机号后再改名
+        temp_path = sessions_dir / f"_importing_{secrets.token_hex(6)}.session"
+        client = None
+        
+        try:
+            temp_path.write_bytes(content)
+            
+            probe_config = AccountFactory.create_account_config(
+                phone='',
+                api_id=resolved_api_id,
+                api_hash=resolved_api_hash,
+                proxy_config=proxy_config,
+                device_params=device_params
+            )
+            client = self.account_manager.create_client(
+                probe_config, session_name=str(temp_path.with_suffix(''))
+            )
+            await client.connect()
+            
+            if not await client.is_user_authorized():
+                return {"success": False, "message": "Session 文件无效或已过期，请重新登录"}
+            
+            me = await client.get_me()
+            account_id = self.resolve_session_phone(phone or metadata.get('phone'), me, filename)
+            
+            if self.account_manager.get_account(account_id):
+                return {"success": False, "message": f"账号 {account_id} 已存在，请勿重复导入"}
+            
+            # Windows 下 sqlite 文件被占用时无法改名，需先断开
+            await client.disconnect()
+            client = None
+            
+            session_path = sessions_dir / f"{account_id.lstrip('+@')}.session"
+            self._replace_session_file(temp_path, session_path)
+            temp_path = None
+            
+            account_config = AccountFactory.create_account_config(
+                phone=account_id,
+                api_id=resolved_api_id,
+                api_hash=resolved_api_hash,
+                proxy_config=proxy_config,
+                proxy_id=proxy_id or None,
+                device_params=device_params
+            )
+            # 记录实际路径，否则重启后会去项目根目录找不到该 session
+            account_config.session_name = str(session_path.with_suffix(''))
+            
+            client = self.account_manager.create_client(account_config)
+            await client.connect()
+            
+            account = Account(
+                account_id=account_id,
+                config=account_config,
+                client=client,
+                own_user_id=me.id,
+                monitor_active=True
+            )
+            
+            self.account_manager.add_account(account)
+            await self.broadcast_status_update()
+            
+            self.logger.info(f"通过 Session 文件成功添加账号: {account_id}, 用户ID: {me.id}")
+            return {
+                "success": True,
+                "account_id": account_id,
+                "message": f"账号导入成功！用户: {me.first_name or account_id}"
+            }
+        
+        except Exception as e:
+            self.logger.error(f"导入 Session 文件 {filename} 失败: {e}")
+            return {"success": False, "message": f"导入失败: {str(e)}"}
+        finally:
+            # temp_path 仅在成功改名后被置空，非空说明导入未完成，需要清理
+            if temp_path:
+                if client:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                self._cleanup_session_file(temp_path)
+    
     def get_current_user(self, request: Request):
         user = request.session.get("user")
         if not user:
@@ -585,10 +743,11 @@ class WebApp:
             user = self.get_current_user(request)
             return self.templates.TemplateResponse(request, "scheduled_messages.html",{"user": user})
         
-        @self.app.get("/channels", response_class=HTMLResponse)
+        @self.app.get("/channels")
         async def channels_page(request: Request):
-            user = self.get_current_user(request)
-            return self.templates.TemplateResponse(request, "channels.html",{"user": user})
+            # 频道列表已并入群组管理的「已加入的对话」，保留跳转避免旧书签 404
+            self.get_current_user(request)
+            return RedirectResponse(url="/groups", status_code=301)
         
         @self.app.get("/groups", response_class=HTMLResponse)
         async def groups_page(request: Request):
@@ -853,114 +1012,87 @@ class WebApp:
             API 凭据可由配套的 .json 提供，也可回退到 .env 默认配置或已有账号的凭据。
             """
             user = self.get_current_user(request)
-            
+
             selected_proxy_id = (proxy_id or '').strip()
             proxy_config = None
             if selected_proxy_id:
                 proxy_config = self.proxy_manager.build_proxy_config(selected_proxy_id)
                 if not proxy_config:
                     return {"success": False, "message": f"代理配置不存在: {selected_proxy_id}"}
-            
-            metadata = parse_session_metadata(await meta_file.read()) if meta_file else {}
-            
-            # 优先级：表单填写 > 配套 json > .env 默认值 > 已有账号的凭据
-            credentials = self.resolve_api_credentials(
-                api_id or metadata.get('api_id'),
-                api_hash or metadata.get('api_hash')
+
+            return await self.import_session_bytes(
+                await file.read(),
+                file.filename,
+                meta_bytes=await meta_file.read() if meta_file else None,
+                phone=phone,
+                api_id=api_id,
+                api_hash=api_hash,
+                proxy_config=proxy_config,
+                proxy_id=selected_proxy_id
             )
-            if not credentials:
+
+        @self.app.post("/api/accounts/upload-sessions")
+        async def upload_sessions(request: Request, files: List[UploadFile] = File(...),
+                                  api_id: str = Form(""), api_hash: str = Form(""),
+                                  proxy_id: str = Form("")):
+            """批量导入 session
+
+            可以一次选中多个 .session 与同名 .json，也可以直接上传打包好的 zip。
+            """
+            user = self.get_current_user(request)
+
+            selected_proxy_id = (proxy_id or '').strip()
+            proxy_config = None
+            if selected_proxy_id:
+                proxy_config = self.proxy_manager.build_proxy_config(selected_proxy_id)
+                if not proxy_config:
+                    return {"success": False, "message": f"代理配置不存在: {selected_proxy_id}"}
+
+            sessions, metas, ignored = await self.collect_session_uploads(files)
+            if not sessions:
                 return {
                     "success": False,
-                    "message": "缺少 API ID / API Hash：请上传该 session 配套的 .json 文件，"
-                               "或展开「高级选项」手动填写，也可在 .env 中配置 TG_API_ID 和 TG_API_HASH"
+                    "message": "没有找到 .session 文件，请选择 session 文件或包含它们的 zip 压缩包"
                 }
-            resolved_api_id, resolved_api_hash = credentials
-            device_params = metadata.get('device_params') or None
-            
-            sessions_dir = Path("sessions")
-            sessions_dir.mkdir(exist_ok=True)
-            
-            # 先落到临时文件，确认 session 有效并拿到手机号后再改名
-            temp_path = sessions_dir / f"_importing_{secrets.token_hex(6)}.session"
-            client = None
-            
-            try:
-                content = await file.read()
-                temp_path.write_bytes(content)
-                
-                probe_config = AccountFactory.create_account_config(
-                    phone='',
-                    api_id=resolved_api_id,
-                    api_hash=resolved_api_hash,
-                    proxy_config=proxy_config,
-                    device_params=device_params
-                )
-                client = self.account_manager.create_client(
-                    probe_config, session_name=str(temp_path.with_suffix(''))
-                )
-                await client.connect()
-                
-                if not await client.is_user_authorized():
-                    return {"success": False, "message": "Session 文件无效或已过期，请重新登录"}
-                
-                me = await client.get_me()
-                account_id = self.resolve_session_phone(phone or metadata.get('phone'), me, file.filename)
-                
-                if self.account_manager.get_account(account_id):
-                    return {"success": False, "message": f"账号 {account_id} 已存在，请勿重复导入"}
-                
-                # Windows 下 sqlite 文件被占用时无法改名，需先断开
-                await client.disconnect()
-                client = None
-                
-                session_path = sessions_dir / f"{account_id.lstrip('+@')}.session"
-                self._replace_session_file(temp_path, session_path)
-                temp_path = None
-                
-                account_config = AccountFactory.create_account_config(
-                    phone=account_id,
-                    api_id=resolved_api_id,
-                    api_hash=resolved_api_hash,
-                    proxy_config=proxy_config,
-                    proxy_id=selected_proxy_id or None,
-                    device_params=device_params
-                )
-                # 记录实际路径，否则重启后会去项目根目录找不到该 session
-                account_config.session_name = str(session_path.with_suffix(''))
-                
-                client = self.account_manager.create_client(account_config)
-                await client.connect()
-                
-                account = Account(
-                    account_id=account_id,
-                    config=account_config,
-                    client=client,
-                    own_user_id=me.id,
-                    monitor_active=True
-                )
-                
-                self.account_manager.add_account(account)
-                await self.broadcast_status_update()
-                
-                self.logger.info(f"通过 Session 文件成功添加账号: {account_id}, 用户ID: {me.id}")
-                return {
-                    "success": True,
-                    "account_id": account_id,
-                    "message": f"账号导入成功！用户: {me.first_name or account_id}"
-                }
-                
-            except Exception as e:
-                self.logger.error(f"导入 Session 文件失败: {e}")
-                return {"success": False, "message": f"导入失败: {str(e)}"}
-            finally:
-                # temp_path 仅在成功改名后被置空，非空说明导入未完成，需要清理
-                if temp_path:
-                    if client:
-                        try:
-                            await client.disconnect()
-                        except Exception:
-                            pass
-                    self._cleanup_session_file(temp_path)
+
+            # 同时连多个账号既慢又容易触发风控，限制并发数
+            semaphore = asyncio.Semaphore(3)
+
+            async def run_one(name: str, content: bytes) -> Dict[str, Any]:
+                async with semaphore:
+                    result = await self.import_session_bytes(
+                        content,
+                        f"{name}.session",
+                        meta_bytes=metas.get(name),
+                        api_id=api_id,
+                        api_hash=api_hash,
+                        proxy_config=proxy_config,
+                        proxy_id=selected_proxy_id
+                    )
+                    return {"file": f"{name}.session", **result}
+
+            results = await asyncio.gather(*[
+                run_one(name, content) for name, content in sorted(sessions.items())
+            ])
+
+            imported = sum(1 for item in results if item["success"])
+            failed = len(results) - imported
+
+            message = f"共 {len(results)} 个 session，成功导入 {imported} 个"
+            if failed:
+                message += f"，失败 {failed} 个"
+            if ignored:
+                message += f"（已忽略 {len(ignored)} 个无关文件）"
+
+            self.logger.info(f"批量导入 session：成功 {imported}，失败 {failed}")
+
+            return {
+                "success": imported > 0,
+                "message": message,
+                "results": results,
+                "ignored": ignored,
+                "summary": {"total": len(results), "imported": imported, "failed": failed}
+            }
 
         @self.app.post("/api/accounts/import-session")
         async def import_session(request: Request, import_req: ImportSessionRequest):

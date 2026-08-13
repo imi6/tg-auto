@@ -3,7 +3,7 @@
 {% block title %}群组管理 - TG监控系统{% endblock %}
 
 {% block page_title %}群组管理{% endblock %}
-{% block page_subtitle %}搜索公开群组并为多个账号批量入群{% endblock %}
+{% block page_subtitle %}搜索公开群组、批量入群，并查看账号已加入的群组和频道{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -216,6 +216,90 @@
     .gm-tag.failed {
         background: rgba(239, 68, 68, 0.15);
         color: var(--danger-color);
+    }
+
+    .gm-tag.bot {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success-color);
+    }
+
+    .gm-tag.user {
+        background: rgba(107, 107, 139, 0.2);
+        color: var(--text-secondary);
+    }
+
+    .gm-mono {
+        font-family: 'SFMono-Regular', Consolas, monospace;
+        font-size: 12px;
+    }
+
+    .gm-copy {
+        margin-left: 6px;
+        padding: 2px 6px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        color: var(--text-muted);
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .gm-copy:hover {
+        background: var(--primary-color);
+        border-color: var(--primary-color);
+        color: #fff;
+    }
+
+    .gm-pagination {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border-top: 1px solid var(--border-color);
+        flex-wrap: wrap;
+    }
+
+    .gm-pagination .pages {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+    }
+
+    .gm-page-btn {
+        min-width: 34px;
+        height: 34px;
+        padding: 0 10px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        color: var(--text-secondary);
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .gm-page-btn:hover:not(:disabled) {
+        border-color: var(--primary-color);
+        color: var(--text-primary);
+    }
+
+    .gm-page-btn.active {
+        background: var(--primary-gradient);
+        border-color: transparent;
+        color: #fff;
+    }
+
+    .gm-page-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
+
+    .gm-page-info {
+        font-size: 13px;
+        color: var(--text-secondary);
     }
 
     .gm-selection-bar {
@@ -446,8 +530,11 @@
     }
 
     @media (max-width: 768px) {
-        .gm-table th:nth-child(4),
-        .gm-table td:nth-child(4) {
+        /* 窄屏隐藏搜索结果的成员数列，已加入列表的 ID 列要保留 */
+        #searchResults .gm-table th:nth-child(4),
+        #searchResults .gm-table td:nth-child(4),
+        #joinedResults .gm-table th:nth-child(5),
+        #joinedResults .gm-table td:nth-child(5) {
             display: none;
         }
     }
@@ -466,7 +553,7 @@
 <div class="gm-tabs">
     <button class="gm-tab active" data-tab="search" onclick="switchTab('search')">搜索群组</button>
     <button class="gm-tab" data-tab="library" onclick="switchTab('library')">群组库 <span id="libraryBadge"></span></button>
-    <button class="gm-tab" data-tab="joined" onclick="switchTab('joined')">已加入的群</button>
+    <button class="gm-tab" data-tab="joined" onclick="switchTab('joined')">已加入的对话</button>
     <button class="gm-tab" data-tab="tasks" onclick="switchTab('tasks')">入群任务 <span id="runningBadge"></span></button>
 </div>
 
@@ -613,7 +700,7 @@
     </div>
 </div>
 
-<!-- 已加入的群 -->
+<!-- 已加入的对话 -->
 <div class="gm-panel" id="panel-joined">
     <div class="gm-card">
         <div class="gm-toolbar">
@@ -623,20 +710,29 @@
             </div>
             <div class="gm-field grow">
                 <label class="gm-label" for="joinedKeyword">筛选</label>
-                <input class="gm-input" id="joinedKeyword" placeholder="按名称筛选" oninput="renderJoined()">
+                <input class="gm-input" id="joinedKeyword" placeholder="按名称、用户名或简介筛选" oninput="onJoinedFilterChange()">
             </div>
             <div class="gm-field">
                 <label class="gm-label" for="joinedType">类型</label>
-                <select class="gm-select" id="joinedType" onchange="renderJoined()">
-                    <option value="all">群组和频道</option>
-                    <option value="group">仅群组</option>
-                    <option value="channel">仅频道</option>
+                <select class="gm-select" id="joinedType" style="min-width: 150px;" onchange="onJoinedFilterChange()">
+                    <option value="all">全部</option>
+                    <option value="group">群组</option>
+                    <option value="channel">频道</option>
+                    <option value="bot">Bot</option>
+                    <option value="user">私聊</option>
                 </select>
             </div>
             <button class="btn btn-primary" style="height: 42px;" id="joinedBtn" onclick="loadJoined()">
                 <i class="bi bi-arrow-clockwise"></i>
                 加载
             </button>
+            <button class="btn btn-secondary" style="height: 42px;" onclick="exportJoined()">
+                <i class="bi bi-download"></i>
+                导出
+            </button>
+        </div>
+        <div class="gm-hint">
+            实时从 Telegram 拉取该账号的全部对话，包含群组、频道、Bot 和私聊。对话多的账号首次加载可能要等十几秒。
         </div>
     </div>
 
@@ -644,9 +740,10 @@
         <div id="joinedResults">
             <div class="gm-empty">
                 <i class="bi bi-collection"></i>
-                选择账号后点击「加载」查看已加入的群组
+                选择账号后点击「加载」查看该账号的对话列表
             </div>
         </div>
+        <div id="joinedPagination"></div>
     </div>
 </div>
 
@@ -744,8 +841,20 @@
     let searchResults = [];
     let selectedTargets = new Map();
     let joinedDialogs = [];
+    let joinedFiltered = [];
+    let joinedPage = 1;
     let tasks = [];
     let currentTab = 'search';
+
+    const JOINED_PAGE_SIZE = 50;
+
+    const JOINED_TYPE_LABEL = {
+        all: '全部',
+        group: '群组',
+        channel: '频道',
+        bot: 'Bot',
+        user: '私聊'
+    };
 
     const STATUS_TEXT = {
         success: '加入成功',
@@ -1270,6 +1379,8 @@
 
         const button = document.getElementById('joinedBtn');
         button.disabled = true;
+        joinedPage = 1;
+        document.getElementById('joinedPagination').innerHTML = '';
         document.getElementById('joinedResults').innerHTML =
             '<div class="gm-empty"><span class="gm-spinner"></span><div style="margin-top:12px;">正在加载...</div></div>';
 
@@ -1281,10 +1392,11 @@
                 showNotification(data.error || '加载失败', 'error');
                 joinedDialogs = [];
             } else {
-                joinedDialogs = (data.channels || []).filter(c => c.type === 'group' || c.type === 'channel');
+                joinedDialogs = data.channels || [];
+                showNotification(`已加载 ${joinedDialogs.length} 个对话`, 'success');
             }
         } catch (error) {
-            console.error('加载已加入的群失败:', error);
+            console.error('加载对话列表失败:', error);
             showNotification('加载请求失败', 'error');
             joinedDialogs = [];
         } finally {
@@ -1293,40 +1405,184 @@
         }
     }
 
-    function renderJoined() {
-        const container = document.getElementById('joinedResults');
+    function filterJoined() {
         const keyword = document.getElementById('joinedKeyword').value.trim().toLowerCase();
         const type = document.getElementById('joinedType').value;
 
-        const filtered = joinedDialogs.filter(item => {
+        return joinedDialogs.filter(item => {
             if (type !== 'all' && item.type !== type) return false;
-            if (keyword && !(item.name || '').toLowerCase().includes(keyword)) return false;
-            return true;
+            if (!keyword) return true;
+            return [item.name, item.username, item.description]
+                .some(field => (field || '').toLowerCase().includes(keyword));
+        });
+    }
+
+    function onJoinedFilterChange() {
+        joinedPage = 1;
+        renderJoined();
+    }
+
+    function updateJoinedTypeCounts() {
+        const counts = { all: joinedDialogs.length, group: 0, channel: 0, bot: 0, user: 0 };
+        joinedDialogs.forEach(item => {
+            if (counts[item.type] !== undefined) counts[item.type] += 1;
         });
 
-        if (!filtered.length) {
-            container.innerHTML = '<div class="gm-empty"><i class="bi bi-collection"></i>没有符合条件的群组</div>';
+        const select = document.getElementById('joinedType');
+        Array.from(select.options).forEach(option => {
+            const label = JOINED_TYPE_LABEL[option.value] || option.value;
+            option.textContent = joinedDialogs.length ? `${label} (${counts[option.value] || 0})` : label;
+        });
+    }
+
+    function renderJoined() {
+        const container = document.getElementById('joinedResults');
+        updateJoinedTypeCounts();
+        joinedFiltered = filterJoined();
+
+        if (!joinedFiltered.length) {
+            container.innerHTML = joinedDialogs.length
+                ? '<div class="gm-empty"><i class="bi bi-funnel"></i>没有符合条件的对话</div>'
+                : '<div class="gm-empty"><i class="bi bi-collection"></i>选择账号后点击「加载」查看该账号的对话列表</div>';
+            document.getElementById('joinedPagination').innerHTML = '';
             return;
         }
 
-        const rows = filtered.map(item => `
-            <tr>
-                <td><div class="gm-title-cell"><span>${escapeHtml(item.name)}</span>
-                    ${item.username ? `<span class="sub">@${escapeHtml(item.username)}</span>` : ''}</div></td>
-                <td><span class="gm-tag ${item.type}">${item.type === 'group' ? '群组' : '频道'}</span></td>
-                <td>${item.members_count ? item.members_count.toLocaleString() : '-'}</td>
-                <td style="font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px;">${escapeHtml(item.id)}</td>
-            </tr>
-        `).join('');
+        const totalPages = Math.max(1, Math.ceil(joinedFiltered.length / JOINED_PAGE_SIZE));
+        if (joinedPage > totalPages) joinedPage = totalPages;
+
+        const start = (joinedPage - 1) * JOINED_PAGE_SIZE;
+        const pageItems = joinedFiltered.slice(start, start + JOINED_PAGE_SIZE);
+
+        const rows = pageItems.map(item => {
+            const link = item.link && item.link.startsWith('http')
+                ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener">${escapeHtml(item.link.replace('https://', ''))}</a>`
+                : '<span style="color: var(--text-muted);">-</span>';
+
+            return `
+                <tr>
+                    <td>
+                        <div class="gm-title-cell">
+                            <span>${escapeHtml(item.name || '未命名')}</span>
+                            ${item.username ? `<span class="sub">@${escapeHtml(item.username)}</span>` : ''}
+                            ${item.description ? `<span class="sub">${escapeHtml(item.description.substring(0, 80))}</span>` : ''}
+                        </div>
+                    </td>
+                    <td><span class="gm-tag ${item.type}">${JOINED_TYPE_LABEL[item.type] || item.type}</span></td>
+                    <td>${item.members_count ? item.members_count.toLocaleString() : '-'}</td>
+                    <td class="gm-mono" style="white-space: nowrap;">
+                        ${escapeHtml(item.id)}
+                        <button class="gm-copy" onclick="copyText('${escapeHtml(item.id)}')" title="复制 ID">
+                            <i class="bi bi-copy"></i>
+                        </button>
+                    </td>
+                    <td>${link}</td>
+                </tr>
+            `;
+        }).join('');
 
         container.innerHTML = `
             <table class="gm-table">
                 <thead>
-                    <tr><th>名称</th><th>类型</th><th>成员数</th><th>ID</th></tr>
+                    <tr><th>名称</th><th>类型</th><th>成员数</th><th>ID</th><th>链接</th></tr>
                 </thead>
                 <tbody>${rows}</tbody>
             </table>
         `;
+
+        renderJoinedPagination(totalPages, start, pageItems.length);
+    }
+
+    function renderJoinedPagination(totalPages, start, pageSize) {
+        const container = document.getElementById('joinedPagination');
+        const info = `显示第 ${start + 1} - ${start + pageSize} 条，共 ${joinedFiltered.length} 条`;
+
+        if (totalPages <= 1) {
+            container.innerHTML = `<div class="gm-pagination"><span class="gm-page-info">${info}</span></div>`;
+            return;
+        }
+
+        // 页码多的时候只展示当前页附近的 5 页，避免几十个按钮撑爆工具栏
+        let startPage = Math.max(1, joinedPage - 2);
+        const endPage = Math.min(totalPages, startPage + 4);
+        startPage = Math.max(1, endPage - 4);
+
+        let pages = '';
+        for (let i = startPage; i <= endPage; i++) {
+            pages += `<button class="gm-page-btn ${i === joinedPage ? 'active' : ''}" onclick="gotoJoinedPage(${i})">${i}</button>`;
+        }
+
+        container.innerHTML = `
+            <div class="gm-pagination">
+                <span class="gm-page-info">${info}</span>
+                <div class="pages">
+                    <button class="gm-page-btn" onclick="gotoJoinedPage(${joinedPage - 1})" ${joinedPage === 1 ? 'disabled' : ''}>
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    ${pages}
+                    <button class="gm-page-btn" onclick="gotoJoinedPage(${joinedPage + 1})" ${joinedPage === totalPages ? 'disabled' : ''}>
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+
+    function gotoJoinedPage(page) {
+        const totalPages = Math.max(1, Math.ceil(joinedFiltered.length / JOINED_PAGE_SIZE));
+        if (page < 1 || page > totalPages || page === joinedPage) return;
+        joinedPage = page;
+        renderJoined();
+    }
+
+    function exportJoined() {
+        if (!joinedDialogs.length) {
+            showNotification('请先加载对话列表', 'warning');
+            return;
+        }
+
+        const select = document.getElementById('joinedAccount');
+        const payload = {
+            export_time: new Date().toISOString(),
+            account: { id: select.value, name: select.selectedOptions[0] ? select.selectedOptions[0].text : '' },
+            dialogs: joinedDialogs.map(item => ({
+                id: item.id,
+                name: item.name,
+                type: item.type,
+                username: item.username,
+                link: item.link,
+                description: item.description,
+                members_count: item.members_count
+            }))
+        };
+
+        const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `dialogs_${select.value}_${Date.now()}.json`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+
+        showNotification(`已导出 ${joinedDialogs.length} 个对话`, 'success');
+    }
+
+    async function copyText(text) {
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                const helper = document.createElement('textarea');
+                helper.value = text;
+                document.body.appendChild(helper);
+                helper.select();
+                document.execCommand('copy');
+                document.body.removeChild(helper);
+            }
+            showNotification('已复制到剪贴板', 'success');
+        } catch (error) {
+            console.error('复制失败:', error);
+            showNotification('复制失败', 'error');
+        }
     }
 
     function openJoinModal(useSelection = false) {

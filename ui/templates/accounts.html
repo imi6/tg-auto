@@ -846,21 +846,28 @@
             <form id="importSessionForm">
                 <div class="form-group">
                     <label class="form-label">Session 文件 <span class="required">*</span></label>
-                    <input type="file" id="sessionFile" accept=".session" required
+                    <input type="file" id="sessionFile" accept=".session,.zip" required multiple
+                           onchange="onSessionFilesChange()"
                            style="padding: 8px; border: 2px dashed var(--border-color); border-radius: var(--radius-md); width: 100%; cursor: pointer;">
                     <small style="color: var(--text-muted); margin-top: 4px; display: block;">
-                        上传 .session 文件（例如：15597438221.session）
+                        可一次选中多个 .session，或直接上传打包好的 .zip
                     </small>
                 </div>
 
                 <div class="form-group">
                     <label class="form-label">配套的 JSON 文件（可选）</label>
-                    <input type="file" id="sessionMetaFile" accept=".json"
+                    <input type="file" id="sessionMetaFile" accept=".json" multiple
+                           onchange="onSessionFilesChange()"
                            style="padding: 8px; border: 2px dashed var(--border-color); border-radius: var(--radius-md); width: 100%; cursor: pointer;">
                     <small style="color: var(--text-muted); margin-top: 4px; display: block;">
-                        同名 .json（例如：15597438221.json），自动读取 API 凭据与设备信息
+                        同名 .json（例如：15597438221.json），按文件名和 session 自动配对
                     </small>
                 </div>
+
+                <div id="importSummary" class="form-help" style="display: none; margin-bottom: 20px;"></div>
+
+                <div id="importResults" style="display: none; margin-bottom: 20px; max-height: 240px; overflow-y: auto;
+                            border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 10px 12px;"></div>
 
                 <div class="form-group">
                     <label class="form-label">代理（可选）</label>
@@ -902,6 +909,7 @@
                         <strong>提示：</strong>
                         <ul style="margin: 8px 0 0 20px;">
                             <li>只需选择 .session 文件即可导入，手机号会自动识别</li>
+                            <li>批量导入时最多 3 个账号同时连接，数量多时请耐心等待</li>
                             <li>session 文件本身不含 API 凭据，若有配套的 .json 请一并上传，能顺带还原设备信息</li>
                             <li>没有 json 时依次取 .env 中的 TG_API_ID / TG_API_HASH、已有账号的凭据</li>
                             <li>都没有，或该 session 是用另一组凭据创建的，请在高级选项中填写</li>
@@ -1537,50 +1545,118 @@
     function hideImportSessionModal() {
         document.getElementById('importSessionModal').classList.remove('show');
         document.getElementById('importSessionForm').reset();
+        document.getElementById('importSummary').style.display = 'none';
+        document.getElementById('importResults').style.display = 'none';
+    }
+
+    function fileStem(name) {
+        return name.replace(/\.[^.]+$/, '');
+    }
+
+    function onSessionFilesChange() {
+        const files = Array.from(document.getElementById('sessionFile').files);
+        const metaFiles = Array.from(document.getElementById('sessionMetaFile').files);
+        const summary = document.getElementById('importSummary');
+
+        if (!files.length) {
+            summary.style.display = 'none';
+            return;
+        }
+
+        const zips = files.filter(f => f.name.toLowerCase().endsWith('.zip'));
+        const sessions = files.filter(f => f.name.toLowerCase().endsWith('.session'));
+        const metaStems = new Set(metaFiles.map(f => fileStem(f.name)));
+        const unpaired = sessions.filter(f => !metaStems.has(fileStem(f.name))).length;
+
+        const parts = [];
+        if (sessions.length) parts.push(`${sessions.length} 个 session`);
+        if (zips.length) parts.push(`${zips.length} 个压缩包`);
+        if (metaFiles.length) parts.push(`${metaFiles.length} 个 json`);
+        if (sessions.length && unpaired) parts.push(`${unpaired} 个没有配套 json`);
+
+        summary.textContent = '已选择 ' + parts.join('，');
+        summary.style.display = 'block';
+    }
+
+    function renderImportResults(results) {
+        const container = document.getElementById('importResults');
+
+        if (!results || !results.length) {
+            container.style.display = 'none';
+            return;
+        }
+
+        container.innerHTML = results.map(item => `
+            <div style="display: flex; gap: 8px; padding: 6px 0; font-size: 13px; border-bottom: 1px dashed var(--border-color);">
+                <i class="bi bi-${item.success ? 'check-circle-fill' : 'x-circle-fill'}"
+                   style="color: var(--${item.success ? 'success' : 'danger'}-color);"></i>
+                <div style="flex: 1; min-width: 0;">
+                    <div style="color: var(--text-primary); word-break: break-all;">${escapeHtml(item.file || '')}</div>
+                    <div style="color: var(--text-muted); font-size: 12px;">${escapeHtml(item.message || '')}</div>
+                </div>
+            </div>
+        `).join('');
+        container.style.display = 'block';
     }
 
     async function submitImportSession() {
-        const fileInput = document.getElementById('sessionFile');
+        const files = Array.from(document.getElementById('sessionFile').files);
+        const metaFiles = Array.from(document.getElementById('sessionMetaFile').files);
         const phone = document.getElementById('importPhone').value.trim();
         const apiId = document.getElementById('importApiId').value.trim();
         const apiHash = document.getElementById('importApiHash').value.trim();
+        const proxyId = document.getElementById('importProxySelect').value;
 
-        if (!fileInput.files[0]) {
+        if (!files.length) {
             showNotification('请选择 session 文件', 'error');
             return;
+        }
+
+        // 单个文件时走原接口，这样高级选项里填的手机号仍然有效
+        const singleFile = files.length === 1
+            && metaFiles.length <= 1
+            && files[0].name.toLowerCase().endsWith('.session');
+
+        if (!singleFile && phone) {
+            showNotification('批量导入时手机号会自动识别，填写的手机号已忽略', 'warning');
         }
 
         const submitButton = event.target;
         submitButton.disabled = true;
         submitButton.innerHTML = '<i class="bi bi-hourglass-split"></i> 导入中...';
+        document.getElementById('importResults').style.display = 'none';
 
         try {
             const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
             // 留空的字段交给后端从 session 和 .env 推导
-            formData.append('phone', phone);
             formData.append('api_id', apiId);
             formData.append('api_hash', apiHash);
-            formData.append('proxy_id', document.getElementById('importProxySelect').value);
+            formData.append('proxy_id', proxyId);
 
-            const metaFile = document.getElementById('sessionMetaFile').files[0];
-            if (metaFile) {
-                formData.append('meta_file', metaFile);
+            let url = '/api/accounts/upload-sessions';
+            if (singleFile) {
+                url = '/api/accounts/upload-session';
+                formData.append('file', files[0]);
+                formData.append('phone', phone);
+                if (metaFiles[0]) formData.append('meta_file', metaFiles[0]);
+            } else {
+                files.concat(metaFiles).forEach(file => formData.append('files', file));
             }
 
-            const response = await fetch('/api/accounts/upload-session', {
-                method: 'POST',
-                body: formData
-            });
-
+            const response = await fetch(url, { method: 'POST', body: formData });
             const result = await response.json();
+
+            renderImportResults(result.results);
 
             if (result.success) {
                 showNotification(result.message || 'Session 导入成功！', 'success');
-                hideImportSessionModal();
                 loadAccounts();
+                // 有失败的条目时留在弹窗里，方便对照哪几个没进来
+                if (!result.results || result.results.every(item => item.success)) {
+                    hideImportSessionModal();
+                }
             } else {
-                showNotification(result.message || 'Session 导入失败', 'error');
+                showNotification(result.message || result.detail || 'Session 导入失败', 'error');
             }
         } catch (error) {
             console.error('导入 Session 失败:', error);
