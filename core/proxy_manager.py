@@ -220,16 +220,16 @@ class ProxyManager(metaclass=Singleton):
     ) -> Dict[str, Any]:
         """测试代理能否连通 Telegram
 
-        有 API 凭据时走完整的 MTProto 握手，否则退化为通过代理建立 TCP 连接。
+        先通过代理建立到 Telegram 的 TCP 连接，确认代理本身可用；
+        再在有 API 凭据时补一次完整的 MTProto 握手。分两步是为了让失败时能指出是哪一层的问题。
         """
         telethon_proxy = build_proxy_tuple(proxy_config)
         if not telethon_proxy:
             return {'ok': False, 'message': '代理配置不完整', 'latency_ms': 0}
 
-        if api_id and api_hash:
+        result = await self._test_via_socket(telethon_proxy)
+        if result['ok'] and api_id and api_hash:
             result = await self._test_via_telegram(telethon_proxy, api_id, api_hash)
-        else:
-            result = await self._test_via_socket(telethon_proxy)
 
         if proxy_id and proxy_id in self.proxies:
             self.proxies[proxy_id]['last_test'] = {**result, 'time': datetime.now().isoformat()}
@@ -259,11 +259,16 @@ class ProxyManager(metaclass=Singleton):
             if not client.is_connected():
                 return {'ok': False, 'message': '代理已连接但无法与 Telegram 建立会话', 'latency_ms': latency}
 
-            return {'ok': True, 'message': f'连接正常，握手耗时 {latency} ms', 'latency_ms': latency}
+            return {'ok': True, 'message': f'连接正常，Telegram 握手耗时 {latency} ms', 'latency_ms': latency}
         except asyncio.TimeoutError:
-            return {'ok': False, 'message': f'连接超时（超过 {TEST_TIMEOUT} 秒）', 'latency_ms': 0}
+            return {
+                'ok': False,
+                'message': f'代理可连通，但 Telegram 握手超时（超过 {TEST_TIMEOUT} 秒）',
+                'latency_ms': 0
+            }
         except Exception as e:
-            return {'ok': False, 'message': str(e) or e.__class__.__name__, 'latency_ms': 0}
+            reason = str(e) or e.__class__.__name__
+            return {'ok': False, 'message': f'代理可连通，但 Telegram 握手失败：{reason}', 'latency_ms': 0}
         finally:
             try:
                 await client.disconnect()
@@ -297,10 +302,12 @@ class ProxyManager(metaclass=Singleton):
             latency = await loop.run_in_executor(None, connect)
             return {
                 'ok': True,
-                'message': f'代理可达 Telegram 服务器，耗时 {latency} ms（未配置 API 凭据，仅测试了 TCP 连通性）',
+                'message': f'代理可达 Telegram 服务器，耗时 {latency} ms。'
+                           f'当前只做了 TCP 连通性测试，在 .env 中配置 TG_API_ID / TG_API_HASH '
+                           f'或先导入一个账号后，可进一步测试 Telegram 握手',
                 'latency_ms': latency
             }
         except socket.timeout:
-            return {'ok': False, 'message': f'连接超时（超过 {TEST_TIMEOUT} 秒）', 'latency_ms': 0}
+            return {'ok': False, 'message': f'代理连接超时（超过 {TEST_TIMEOUT} 秒）', 'latency_ms': 0}
         except Exception as e:
             return {'ok': False, 'message': str(e) or e.__class__.__name__, 'latency_ms': 0}

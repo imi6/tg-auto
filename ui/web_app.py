@@ -284,6 +284,22 @@ class WebApp:
         
         return parsed_id, raw_hash
     
+    def resolve_test_credentials(self) -> Optional[tuple]:
+        """代理测试用的 API 凭据
+
+        优先取 .env 中的默认配置；没有时借用任一已导入账号的凭据，
+        以便仍能做完整的 Telegram 握手测试，而不是退化成只测 TCP。
+        """
+        credentials = self.resolve_api_credentials(None, None)
+        if credentials:
+            return credentials
+        
+        for account in self.account_manager.list_accounts():
+            if account.config.api_id and account.config.api_hash:
+                return account.config.api_id, account.config.api_hash
+        
+        return None
+    
     @staticmethod
     def resolve_session_phone(phone: Optional[str], me, filename: Optional[str] = None) -> str:
         """确定 session 对应的账号标识
@@ -1803,7 +1819,7 @@ class WebApp:
             if error:
                 return {"success": False, "ok": False, "message": error}
             
-            credentials = self.resolve_api_credentials(None, None)
+            credentials = self.resolve_test_credentials()
             api_id, api_hash = credentials if credentials else (None, None)
             
             result = await self.proxy_manager.test_proxy(data, api_id, api_hash)
@@ -1817,7 +1833,7 @@ class WebApp:
             if not proxy_config:
                 raise HTTPException(status_code=404, detail="代理不存在")
             
-            credentials = self.resolve_api_credentials(None, None)
+            credentials = self.resolve_test_credentials()
             api_id, api_hash = credentials if credentials else (None, None)
             
             result = await self.proxy_manager.test_proxy(proxy_config, api_id, api_hash, proxy_id=proxy_id)
