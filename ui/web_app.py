@@ -264,6 +264,38 @@ class WebApp:
         
         self.logger.info(f"Web认证已启用，用户名: {self.web_username}")
     
+    @staticmethod
+    def parse_target_ids(payload: Dict[str, Any]) -> List[int]:
+        """解析定时消息的目标 ID
+
+        兼容单个 channel_id 与多选的 channel_ids，返回去重后的整数列表。
+        """
+        raw_values = payload.get("channel_ids")
+        if not isinstance(raw_values, list):
+            raw_values = [payload.get("channel_id", "")]
+        
+        target_ids: List[int] = []
+        for raw in raw_values:
+            text = str(raw).strip()
+            if not text:
+                continue
+            
+            try:
+                target_id = int(text)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"无效的目标ID格式，请输入数字ID：{text}")
+            
+            if target_id == 0:
+                raise HTTPException(status_code=400, detail="目标ID不能为0")
+            
+            if target_id not in target_ids:
+                target_ids.append(target_id)
+        
+        if not target_ids:
+            raise HTTPException(status_code=400, detail="目标ID不能为空")
+        
+        return target_ids
+    
     def borrow_account_credentials(self) -> Optional[tuple]:
         """借用任一已有账号的 API 凭据
 
@@ -407,9 +439,11 @@ class WebApp:
         
         @self.app.exception_handler(400)
         async def bad_request_handler(request: Request, exc):
+            # 主动抛出的 400 带的是给用户看的提示，原样返回；其余情况才用兜底文案
+            detail = getattr(exc, 'detail', None)
             return JSONResponse(
                 status_code=400,
-                content={"detail": "Invalid request"}
+                content={"detail": detail or "Invalid request"}
             )
         
         @self.app.exception_handler(422)
@@ -1999,16 +2033,7 @@ class WebApp:
                 from models.config import ScheduledMessageConfig
                 import uuid
                 
-                channel_id = message.get("channel_id", "")
-                if channel_id:
-                    try:
-                        target_id = int(channel_id)
-                        if target_id == 0:
-                            raise HTTPException(status_code=400, detail="目标ID不能为0")
-                    except ValueError:
-                        raise HTTPException(status_code=400, detail="无效的目标ID格式，请输入数字ID")
-                else:
-                    raise HTTPException(status_code=400, detail="目标ID不能为空")
+                target_ids = self.parse_target_ids(message)
                 
                 max_executions = message.get("max_executions")
                 if max_executions == "" or max_executions is None:
@@ -2050,27 +2075,38 @@ class WebApp:
                 if not message.get("message") and not message.get("use_ai"):
                     raise HTTPException(status_code=400, detail="消息内容或AI提示词不能为空")
                 
-                config = ScheduledMessageConfig(
-                    job_id=str(uuid.uuid4()),
-                    target_id=target_id,
-                    message=message.get("message", ""),
-                    schedule_mode=schedule_mode,
-                    cron=schedule_expr,
-                    random_offset=message.get("random_delay", message.get("random_offset", 0)),
-                    delete_after_sending=message.get("delete_after_send", message.get("delete_after_sending", False)),
-                    account_id=message.get("account_id"),
-                    max_executions=max_executions,
-                    execution_count=0,
-                    use_ai=message.get("use_ai", False),
-                    ai_prompt=message.get("ai_prompt")
-                )
-                
                 from core import MonitorEngine
                 engine = MonitorEngine()
-                engine.add_scheduled_message(config)
                 
-                return {"success": True, "job_id": config.job_id}
+                # 每个目标独立成一条任务，便于单独暂停或删除
+                job_ids = []
+                for target_id in target_ids:
+                    config = ScheduledMessageConfig(
+                        job_id=str(uuid.uuid4()),
+                        target_id=target_id,
+                        message=message.get("message", ""),
+                        schedule_mode=schedule_mode,
+                        cron=schedule_expr,
+                        random_offset=message.get("random_delay", message.get("random_offset", 0)),
+                        delete_after_sending=message.get("delete_after_send", message.get("delete_after_sending", False)),
+                        account_id=message.get("account_id"),
+                        max_executions=max_executions,
+                        execution_count=0,
+                        use_ai=message.get("use_ai", False),
+                        ai_prompt=message.get("ai_prompt")
+                    )
+                    engine.add_scheduled_message(config)
+                    job_ids.append(config.job_id)
                 
+                return {
+                    "success": True,
+                    "job_id": job_ids[0],
+                    "job_ids": job_ids,
+                    "message": f"已创建 {len(job_ids)} 条定时消息"
+                }
+                
+            except HTTPException:
+                raise
             except Exception as e:
                 self.logger.error(f"创建定时消息失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
@@ -2135,6 +2171,13 @@ class WebApp:
                 from core import MonitorEngine
                 engine = MonitorEngine()
                 
+                target_ids = self.parse_target_ids(data)
+                if len(target_ids) > 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="编辑时只能指定一个目标，需要发到多个群请新建定时消息"
+                    )
+                
                 for i, msg in enumerate(engine.scheduled_messages):
                     if msg.get('job_id') == job_id:
                         old_cron = msg.get('cron') or msg.get('schedule')
@@ -2157,8 +2200,8 @@ class WebApp:
                         engine.scheduled_messages[i].update({
                             'account_id': data.get('account_id'),
                             'message': data.get('message', ''),
-                            'channel_id': data.get('channel_id'),
-                            'target_id': data.get('channel_id'),
+                            'channel_id': target_ids[0],
+                            'target_id': target_ids[0],
                             'schedule': new_cron,
                             'cron': new_cron,
                             'use_ai': data.get('use_ai', False),
@@ -2200,6 +2243,8 @@ class WebApp:
                 
                 return {"success": False, "message": "未找到指定的定时消息"}
                 
+            except HTTPException:
+                raise
             except Exception as e:
                 self.logger.error(f"更新定时消息失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
