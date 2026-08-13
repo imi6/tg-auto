@@ -24,11 +24,14 @@ from pydantic import BaseModel
 from core import AccountManager, MonitorEngine
 from core.account_manager import AccountFactory
 from core.join_task_manager import JoinTaskManager
+from core.profile_task_manager import ProfileTaskManager
 from models import Account, AccountConfig
 from models.config import KeywordConfig, FileConfig, AIMonitorConfig, MatchType, ScheduledMessageConfig
+from models.task import STATUS_SUCCESS
 from monitors import monitor_factory, AIMonitorBuilder
 from services import AIService
 from services.group_service import GroupService
+from services.profile_service import ProfileService
 from utils.logger import get_logger
 from .status_monitor import StatusMonitor
 from .config_wizard import ConfigWizard
@@ -128,6 +131,25 @@ class BatchJoinRequest(BaseModel):
     max_flood_wait: int = 600
 
 
+class ProfileUpdateRequest(BaseModel):
+    # 留 None 表示该字段不修改，空字符串表示清空
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    about: Optional[str] = None
+
+
+class UsernameCheckRequest(BaseModel):
+    username: str
+
+
+class BatchProfileRequest(BaseModel):
+    account_ids: List[str]
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    about: Optional[str] = None
+
+
 class WebApp:
     
     def __init__(self):
@@ -144,7 +166,9 @@ class WebApp:
         self.status_monitor = StatusMonitor()
         self.config_wizard = ConfigWizard()
         self.group_service = GroupService()
+        self.profile_service = ProfileService()
         self.join_task_manager = JoinTaskManager()
+        self.profile_task_manager = ProfileTaskManager()
         self.logger = get_logger(__name__)
         
         self.websocket_connections: List[WebSocket] = []
@@ -157,11 +181,42 @@ class WebApp:
         self.setup_routes()
         
         self.join_task_manager.add_listener(self._on_join_task_update)
+        self.profile_task_manager.add_listener(self._on_profile_task_update)
         
         self.logger.info("Web应用初始化完成")
     
     async def _on_join_task_update(self, task: Dict[str, Any]):
         await self.broadcast_message({"type": "join_task_update", "data": task})
+    
+    async def _on_profile_task_update(self, task: Dict[str, Any]):
+        await self.broadcast_message({"type": "profile_task_update", "data": task})
+    
+    async def get_connected_client(self, account_id: str):
+        """获取账号可用的客户端，账号不存在时抛 404，未登录或连接失败时返回 None"""
+        account = self.account_manager.get_account(account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        
+        try:
+            if not account.client:
+                await self.account_manager.connect_account(account_id)
+                account = self.account_manager.get_account(account_id)
+            
+            if not account or not account.client:
+                return None
+            
+            if not account.client.is_connected():
+                await account.client.connect()
+            
+            if not await account.client.is_user_authorized():
+                return None
+            
+            return account.client
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(f"连接账号 {account_id} 失败: {e}")
+            return None
     
     def _safe_remove_websocket(self, websocket: WebSocket):
         try:
@@ -404,7 +459,12 @@ class WebApp:
         @self.app.get("/groups", response_class=HTMLResponse)
         async def groups_page(request: Request):
             user = self.get_current_user(request)
-            return self.templates.TemplateResponse("groups.html", {"request": request, "user": user})
+            return self.templates.TemplateResponse(request, "groups.html", {"user": user})
+        
+        @self.app.get("/profiles", response_class=HTMLResponse)
+        async def profiles_page(request: Request):
+            user = self.get_current_user(request)
+            return self.templates.TemplateResponse(request, "profiles.html", {"user": user})
         
         @self.app.get("/config-export", response_class=HTMLResponse)
         async def config_export_page(request: Request):
@@ -1504,23 +1564,13 @@ class WebApp:
             if not keyword:
                 return {"success": False, "message": "请输入搜索关键词", "groups": []}
             
-            account = self.account_manager.get_account(search_request.account_id)
-            if not account:
-                raise HTTPException(status_code=404, detail="账号不存在")
+            client = await self.get_connected_client(search_request.account_id)
+            if not client:
+                return {"success": False, "message": "账号未登录，无法搜索", "groups": []}
             
             try:
-                if not account.client:
-                    await self.account_manager.connect_account(search_request.account_id)
-                    account = self.account_manager.get_account(search_request.account_id)
-                
-                if not account or not account.client:
-                    return {"success": False, "message": "账号未登录，无法搜索", "groups": []}
-                
-                if not account.client.is_connected():
-                    await account.client.connect()
-                
                 groups = await self.group_service.search(
-                    account.client,
+                    client,
                     keyword,
                     limit=min(max(search_request.limit, 1), 100),
                     group_type=search_request.group_type
@@ -1616,6 +1666,154 @@ class WebApp:
                 raise HTTPException(status_code=404, detail="任务不存在")
             
             if not self.join_task_manager.delete_task(task_id):
+                return {"success": False, "message": "任务运行中，请先取消"}
+            
+            return {"success": True, "message": "任务记录已删除"}
+        
+        @self.app.get("/api/accounts/{account_id}/profile")
+        async def get_account_profile(request: Request, account_id: str):
+            user = self.get_current_user(request)
+            
+            client = await self.get_connected_client(account_id)
+            if not client:
+                return {"success": False, "message": "账号未登录，无法读取资料"}
+            
+            try:
+                profile = await self.profile_service.get_profile(client)
+                return {"success": True, "profile": profile}
+            except Exception as e:
+                self.logger.error(f"读取账号 {account_id} 资料失败: {e}")
+                return {"success": False, "message": str(e)}
+        
+        @self.app.put("/api/accounts/{account_id}/profile")
+        async def update_account_profile(request: Request, account_id: str, profile_request: ProfileUpdateRequest):
+            user = self.get_current_user(request)
+            
+            client = await self.get_connected_client(account_id)
+            if not client:
+                return {"success": False, "message": "账号未登录，无法修改资料"}
+            
+            results = []
+            
+            try:
+                if any(v is not None for v in (profile_request.first_name,
+                                               profile_request.last_name,
+                                               profile_request.about)):
+                    results.append(await self.profile_service.update_profile(
+                        client,
+                        first_name=profile_request.first_name,
+                        last_name=profile_request.last_name,
+                        about=profile_request.about
+                    ))
+                
+                # 用户名放在最后：它是全局唯一资源，失败时前面的改动仍然有效
+                if profile_request.username is not None:
+                    results.append(await self.profile_service.set_username(
+                        client, profile_request.username
+                    ))
+                
+                if not results:
+                    return {"success": False, "message": "没有需要修改的字段"}
+                
+                failed = [r for r in results if r['status'] != STATUS_SUCCESS]
+                profile = await self.profile_service.get_profile(client)
+                
+                if failed:
+                    return {
+                        "success": False,
+                        "message": "；".join(r['message'] for r in failed),
+                        "profile": profile
+                    }
+                
+                self.logger.info(f"账号 {account_id} 资料修改成功")
+                return {
+                    "success": True,
+                    "message": "；".join(r['message'] for r in results),
+                    "profile": profile
+                }
+                
+            except Exception as e:
+                self.logger.error(f"修改账号 {account_id} 资料失败: {e}")
+                return {"success": False, "message": str(e)}
+        
+        @self.app.post("/api/accounts/{account_id}/profile/check-username")
+        async def check_account_username(request: Request, account_id: str, check_request: UsernameCheckRequest):
+            user = self.get_current_user(request)
+            
+            client = await self.get_connected_client(account_id)
+            if not client:
+                return {"success": False, "available": False, "message": "账号未登录，无法检查"}
+            
+            result = await self.profile_service.check_username(client, check_request.username)
+            return {"success": True, **result}
+        
+        @self.app.post("/api/profile/batch-tasks")
+        async def create_profile_task(request: Request, batch_request: BatchProfileRequest):
+            user = self.get_current_user(request)
+            
+            if not batch_request.account_ids:
+                return {"success": False, "message": "请至少选择一个账号"}
+            
+            missing = [
+                account_id for account_id in batch_request.account_ids
+                if not self.account_manager.get_account(account_id)
+            ]
+            if missing:
+                return {"success": False, "message": f"账号不存在: {', '.join(missing)}"}
+            
+            if all(v is None for v in (batch_request.first_name, batch_request.last_name, batch_request.about)):
+                return {"success": False, "message": "请至少填写一个需要修改的字段"}
+            
+            error = self.profile_service.validate_profile_fields(
+                batch_request.first_name, batch_request.last_name, batch_request.about
+            )
+            if error:
+                return {"success": False, "message": error}
+            
+            task = self.profile_task_manager.create_task(
+                account_ids=batch_request.account_ids,
+                first_name=batch_request.first_name,
+                last_name=batch_request.last_name,
+                about=batch_request.about
+            )
+            
+            return {
+                "success": True,
+                "task": task,
+                "message": f"任务已启动：将修改 {len(batch_request.account_ids)} 个账号的资料"
+            }
+        
+        @self.app.get("/api/profile/batch-tasks")
+        async def list_profile_tasks(request: Request, limit: int = 20):
+            user = self.get_current_user(request)
+            return {"success": True, "tasks": self.profile_task_manager.list_tasks(limit)}
+        
+        @self.app.get("/api/profile/batch-tasks/{task_id}")
+        async def get_profile_task(request: Request, task_id: str):
+            user = self.get_current_user(request)
+            task = self.profile_task_manager.get_task(task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail="任务不存在")
+            return {"success": True, "task": task}
+        
+        @self.app.post("/api/profile/batch-tasks/{task_id}/cancel")
+        async def cancel_profile_task(request: Request, task_id: str):
+            user = self.get_current_user(request)
+            if not self.profile_task_manager.get_task(task_id):
+                raise HTTPException(status_code=404, detail="任务不存在")
+            
+            if not self.profile_task_manager.cancel_task(task_id):
+                return {"success": False, "message": "任务已结束，无需取消"}
+            
+            return {"success": True, "message": "已请求取消，正在等待当前操作结束"}
+        
+        @self.app.delete("/api/profile/batch-tasks/{task_id}")
+        async def delete_profile_task(request: Request, task_id: str):
+            user = self.get_current_user(request)
+            if not self.profile_task_manager.get_task(task_id):
+                raise HTTPException(status_code=404, detail="任务不存在")
+            
+            if not self.profile_task_manager.delete_task(task_id):
                 return {"success": False, "message": "任务运行中，请先取消"}
             
             return {"success": True, "message": "任务记录已删除"}

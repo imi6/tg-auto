@@ -5,10 +5,14 @@
 
 from .account_manager import AccountManager
 from .monitor_engine import MonitorEngine
+from .batch_task_manager import BatchTaskManager
 from .join_task_manager import JoinTaskManager
+from .profile_task_manager import ProfileTaskManager
 
 __all__ = [
     'AccountManager',
     'MonitorEngine',
-    'JoinTaskManager'
+    'BatchTaskManager',
+    'JoinTaskManager',
+    'ProfileTaskManager'
 ] 

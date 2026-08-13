@@ -15,6 +15,13 @@ from telethon.tl.functions.contacts import SearchRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChatInviteAlready, ChatInvitePeek
 
+from models.task import (
+    STATUS_ALREADY,
+    STATUS_FAILED,
+    STATUS_FLOOD,
+    STATUS_PENDING,
+    STATUS_SUCCESS,
+)
 from utils.logger import get_logger
 
 
@@ -36,13 +43,6 @@ UsernameNotOccupiedError = _error('UsernameNotOccupiedError')
 UsernameInvalidError = _error('UsernameInvalidError')
 UserBannedInChannelError = _error('UserBannedInChannelError')
 UserDeactivatedBanError = _error('UserDeactivatedBanError')
-
-# 加入结果状态
-STATUS_SUCCESS = 'success'
-STATUS_ALREADY = 'already'
-STATUS_PENDING = 'pending'
-STATUS_FAILED = 'failed'
-STATUS_FLOOD = 'flood'
 
 _INVITE_PATTERN = re.compile(r'^(?:\+|joinchat/)(?P<hash>[\w-]+)$', re.IGNORECASE)
 _USERNAME_PATTERN = re.compile(r'^[a-zA-Z][\w]{2,31}$')
