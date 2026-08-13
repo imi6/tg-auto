@@ -296,6 +296,39 @@ class WebApp:
         
         return target_ids
     
+    @staticmethod
+    def fanout_scheduled_message(engine, payload: Dict[str, Any], target_ids: List[int],
+                                 max_executions: Optional[int]) -> List[str]:
+        """按给定目标批量新建定时消息，返回新建的 job_id 列表
+
+        创建和编辑共用：多选的每个目标各自独立成一条任务，便于单独暂停或删除。
+        """
+        from models.config import ScheduledMessageConfig
+        import uuid
+        
+        schedule_expr = payload.get("schedule", payload.get("cron", ""))
+        job_ids = []
+        
+        for target_id in target_ids:
+            job_id = str(uuid.uuid4())
+            engine.add_scheduled_message(ScheduledMessageConfig(
+                job_id=job_id,
+                target_id=target_id,
+                message=payload.get("message", ""),
+                schedule_mode=payload.get("schedule_mode", "cron"),
+                cron=schedule_expr,
+                random_offset=payload.get("random_delay", payload.get("random_offset", 0)),
+                delete_after_sending=payload.get("delete_after_send", payload.get("delete_after_sending", False)),
+                account_id=payload.get("account_id"),
+                max_executions=max_executions,
+                execution_count=0,
+                use_ai=payload.get("use_ai", False),
+                ai_prompt=payload.get("ai_prompt")
+            ))
+            job_ids.append(job_id)
+        
+        return job_ids
+    
     def borrow_account_credentials(self) -> Optional[tuple]:
         """借用任一已有账号的 API 凭据
 
@@ -2030,9 +2063,6 @@ class WebApp:
         async def create_scheduled_message(request: Request, message: Dict[str, Any]):
             user = self.get_current_user(request)
             try:
-                from models.config import ScheduledMessageConfig
-                import uuid
-                
                 target_ids = self.parse_target_ids(message)
                 
                 max_executions = message.get("max_executions")
@@ -2078,25 +2108,7 @@ class WebApp:
                 from core import MonitorEngine
                 engine = MonitorEngine()
                 
-                # 每个目标独立成一条任务，便于单独暂停或删除
-                job_ids = []
-                for target_id in target_ids:
-                    config = ScheduledMessageConfig(
-                        job_id=str(uuid.uuid4()),
-                        target_id=target_id,
-                        message=message.get("message", ""),
-                        schedule_mode=schedule_mode,
-                        cron=schedule_expr,
-                        random_offset=message.get("random_delay", message.get("random_offset", 0)),
-                        delete_after_sending=message.get("delete_after_send", message.get("delete_after_sending", False)),
-                        account_id=message.get("account_id"),
-                        max_executions=max_executions,
-                        execution_count=0,
-                        use_ai=message.get("use_ai", False),
-                        ai_prompt=message.get("ai_prompt")
-                    )
-                    engine.add_scheduled_message(config)
-                    job_ids.append(config.job_id)
+                job_ids = self.fanout_scheduled_message(engine, message, target_ids, max_executions)
                 
                 return {
                     "success": True,
@@ -2172,11 +2184,6 @@ class WebApp:
                 engine = MonitorEngine()
                 
                 target_ids = self.parse_target_ids(data)
-                if len(target_ids) > 1:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="编辑时只能指定一个目标，需要发到多个群请新建定时消息"
-                    )
                 
                 for i, msg in enumerate(engine.scheduled_messages):
                     if msg.get('job_id') == job_id:
@@ -2239,6 +2246,16 @@ class WebApp:
                                         self.logger.error(f"重新添加定时任务失败: {add_error}")
                         
                         engine._save_scheduled_messages()
+                        
+                        # 编辑时新增的目标各自成为一条新任务，当前这条只保留第一个目标
+                        added = self.fanout_scheduled_message(engine, data, target_ids[1:], max_executions)
+                        if added:
+                            return {
+                                "success": True,
+                                "job_ids": added,
+                                "message": f"已更新，并为另外 {len(added)} 个目标新建了定时消息"
+                            }
+                        
                         return {"success": True, "message": "定时消息更新成功"}
                 
                 return {"success": False, "message": "未找到指定的定时消息"}
