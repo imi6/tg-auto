@@ -152,6 +152,37 @@
         text-align: right;
     }
 
+    .health-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-top: 6px;
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: default;
+    }
+
+    .health-badge.free {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success-color);
+    }
+
+    .health-badge.limited {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--danger-color);
+    }
+
+    .health-badge.unknown {
+        background: rgba(107, 107, 139, 0.18);
+        color: var(--text-secondary);
+    }
+
+    .account-card.limited {
+        border-color: var(--danger-color);
+    }
+
     .account-card.connecting {
         border-color: var(--warning-color);
     }
@@ -599,6 +630,10 @@
         <span>已选中 <strong id="selectedAccountCount">0</strong> 个账号</span>
     </div>
     <div style="display: flex; gap: 10px;">
+        <button class="btn btn-secondary btn-sm" id="batchHealthBtn" onclick="checkSelectedHealth()">
+            <i class="bi bi-shield-check"></i>
+            检测受限状态
+        </button>
         <button class="btn btn-primary btn-sm" onclick="showBatchProfileModal()">
             <i class="bi bi-person-badge"></i>
             批量设置名字与简介
@@ -1315,7 +1350,7 @@
                     }
                     
                     const card = document.createElement('div');
-                    card.className = `account-card ${statusClass}`;
+                    card.className = `account-card ${statusClass}${account.is_limited ? ' limited' : ''}`;
                     card.innerHTML = `
                         <input type="checkbox" class="account-select" value="${account.account_id}"
                                ${account.is_valid ? '' : 'disabled'}
@@ -1341,6 +1376,7 @@
                                         ${account.proxy_name}
                                     </div>
                                 ` : ''}
+                                ${renderHealthBadge(account)}
                             </div>
                         </div>
                         <div class="account-body">
@@ -1364,6 +1400,10 @@
                                 <button class="account-action-btn" onclick="showProfileModal('${account.account_id}', '${account.phone}')">
                                     <i class="bi bi-person-badge"></i>
                                     资料
+                                </button>
+                                <button class="account-action-btn" onclick="checkAccountHealth('${account.account_id}', this)">
+                                    <i class="bi bi-shield-check"></i>
+                                    体检
                                 </button>
                                 <button class="account-action-btn" onclick="window.location.href='/monitors?account=${account.account_id}'">
                                     <i class="bi bi-eye"></i>
@@ -1410,6 +1450,95 @@
         }
     }
     
+    const HEALTH_TEXT = { free: '未受限', limited: '已受限', unknown: '未检测' };
+    const HEALTH_ICON = { free: 'shield-check', limited: 'shield-exclamation', unknown: 'shield' };
+
+    function renderHealthBadge(account) {
+        const health = account.health || {};
+        const state = account.is_limited ? 'limited' : (health.state === 'limited' ? 'free' : health.state || 'unknown');
+        // state 为 limited 但 is_limited 为假，说明限制期已过，按未受限展示
+
+        const checkedAt = health.checked_at ? health.checked_at.replace('T', ' ').split('.')[0] : '';
+        const until = account.is_limited && health.until ? `，解封时间 ${health.until}` : '';
+        const tip = `${health.message || '尚未检测'}${until}${checkedAt ? `（检测于 ${checkedAt}）` : ''}`;
+
+        return `
+            <div class="health-badge ${state}" title="${escapeHtml(tip)}">
+                <i class="bi bi-${HEALTH_ICON[state]}"></i>
+                ${HEALTH_TEXT[state]}${account.is_limited && health.until ? ` 至 ${escapeHtml(health.until)}` : ''}
+            </div>
+        `;
+    }
+
+    async function checkAccountHealth(accountId, button) {
+        const original = button ? button.innerHTML : '';
+        if (button) {
+            button.disabled = true;
+            button.innerHTML = '<i class="bi bi-hourglass-split"></i> 检测中';
+        }
+
+        try {
+            const response = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/health-check`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                showNotification(data.message || '检测失败', 'error');
+                return;
+            }
+
+            const health = data.health || {};
+            const type = health.state === 'limited' ? 'error' : (health.state === 'free' ? 'success' : 'warning');
+            showNotification(`${accountId}：${HEALTH_TEXT[health.state] || health.state}`, type);
+            await loadAccounts();
+        } catch (error) {
+            console.error('健康检测失败:', error);
+            showNotification('检测请求失败', 'error');
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.innerHTML = original;
+            }
+        }
+    }
+
+    async function checkSelectedHealth() {
+        const accountIds = [...selectedAccountIds];
+        if (!accountIds.length) {
+            showNotification('请先勾选要检测的账号', 'warning');
+            return;
+        }
+
+        const button = document.getElementById('batchHealthBtn');
+        const original = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<i class="bi bi-hourglass-split"></i> 检测中';
+
+        try {
+            const response = await fetch('/api/accounts/health-check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ account_ids: accountIds })
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                showNotification(data.message || '检测失败', 'error');
+                return;
+            }
+
+            showNotification(data.message, (data.limited || []).length ? 'warning' : 'success');
+            await loadAccounts();
+        } catch (error) {
+            console.error('批量健康检测失败:', error);
+            showNotification('检测请求失败', 'error');
+        } finally {
+            button.disabled = false;
+            button.innerHTML = original;
+        }
+    }
+
     let selectedAccountIds = new Set();
     
     function restoreAccountSelection(accounts) {

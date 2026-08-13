@@ -244,6 +244,47 @@
         text-decoration: underline;
     }
 
+    .precheck-result {
+        margin: 8px 0 4px;
+        padding: 10px 12px;
+        max-height: 200px;
+        overflow-y: auto;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        font-size: 12px;
+    }
+
+    .precheck-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-bottom: 8px;
+        margin-bottom: 8px;
+        border-bottom: 1px solid var(--border-color);
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .precheck-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 4px 0;
+        color: var(--text-secondary);
+    }
+
+    .precheck-line.ok {
+        color: var(--success-color);
+    }
+
+    .precheck-line.bad span:last-child {
+        color: var(--danger-color);
+        white-space: nowrap;
+    }
+
     .target-manual summary {
         font-size: 12px;
         color: var(--text-secondary);
@@ -774,7 +815,12 @@
                     <div class="target-actions">
                         <button type="button" class="btn-link" onclick="toggleAllTargets(true)">全选当前结果</button>
                         <button type="button" class="btn-link" onclick="toggleAllTargets(false)">清空选择</button>
+                        <button type="button" class="btn-link" id="precheckBtn" onclick="precheckSelectedTargets()">
+                            预检所选目标
+                        </button>
                     </div>
+
+                    <div id="precheckResult" class="precheck-result" style="display: none;"></div>
 
                     <details class="target-manual">
                         <summary>手动输入 ID（列表里没有的目标）</summary>
@@ -792,6 +838,16 @@
                     <input type="number" class="form-input" id="send-interval" value="5" min="0" step="0.5">
                     <small class="text-muted">
                         群发时每发完一个目标等待的秒数。目标较多时不要设得太小，否则容易触发 Telegram 限流
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <div class="form-checkbox">
+                        <input type="checkbox" id="precheck-enabled" checked>
+                        <label for="precheck-enabled">发送前检查目标权限，自动跳过发不出去的群</label>
+                    </div>
+                    <small class="text-muted">
+                        全员禁言、只允许管理员发言、已经被移出的群会被跳过并记进发送记录，不会白白消耗一次发送
                     </small>
                 </div>
                 
@@ -1164,22 +1220,30 @@
 
         let text = `${targets.total} 个目标：成功 ${targets.success}`;
         if (targets.failed) text += `，失败 ${targets.failed}`;
-        if (targets.stopped) text += '（中途停止）';
+        if (targets.skipped) text += `，预检跳过 ${targets.skipped}`;
+        if (targets.account_limited) text += '（账号触发风控）';
+        else if (targets.stopped) text += '（中途停止）';
 
         return text;
     }
 
     function renderFailureList(record) {
-        const failures = (record.targets || {}).failures || [];
-        if (failures.length < 2) return '';
+        const targets = record.targets || {};
 
-        const rows = failures
+        return renderTargetDetails('失败', targets.failures || [], targets.failed) +
+               renderTargetDetails('跳过', targets.skips || [], targets.skipped);
+    }
+
+    function renderTargetDetails(label, items, total) {
+        if (items.length < 2) return '';
+
+        const rows = items
             .map(item => `<div>${escapeHtml(item.target_id)}: ${escapeHtml(item.error)}</div>`)
             .join('');
-        const omitted = record.targets.failed - failures.length;
+        const omitted = (total || items.length) - items.length;
 
         return `<details class="record-failures">
-            <summary>查看 ${failures.length} 条失败明细${omitted > 0 ? `（另有 ${omitted} 条未记录）` : ''}</summary>
+            <summary>查看 ${items.length} 条${label}明细${omitted > 0 ? `（另有 ${omitted} 条未记录）` : ''}</summary>
             ${rows}
         </details>`;
     }
@@ -1374,7 +1438,112 @@
         document.getElementById('target-search').value = '';
         document.getElementById('target-type-filter').value = 'chat';
         document.getElementById('target-manual-ids').value = '';
+        document.getElementById('precheckResult').style.display = 'none';
         updateTargetCount();
+    }
+
+    const PRECHECK_TEXT = {
+        ok: '可以发送',
+        muted_all: '全员禁言',
+        admin_only: '仅管理员可发言',
+        restricted: '当前账号被禁言',
+        left: '已退出或被移出',
+        not_found: '找不到该目标',
+        flood: '触发限流，未检查',
+        unknown: '状态未知'
+    };
+
+    async function precheckSelectedTargets() {
+        const accountId = document.getElementById('account-selector').value;
+        const targetIds = collectTargetIds();
+        const container = document.getElementById('precheckResult');
+
+        if (!accountId) {
+            showNotification('请先选择账号', 'warning');
+            return;
+        }
+        if (!targetIds.length) {
+            showNotification('请先选择要预检的目标', 'warning');
+            return;
+        }
+
+        const button = document.getElementById('precheckBtn');
+        button.disabled = true;
+        container.style.display = 'block';
+        container.innerHTML = '<div class="precheck-line">正在预检...</div>';
+
+        try {
+            const response = await fetch('/api/targets/precheck', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    account_id: accountId,
+                    target_ids: targetIds.map(id => parseInt(id, 10)).filter(Number.isFinite)
+                })
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                container.innerHTML = `<div class="precheck-line bad">${escapeHtml(data.message || '预检失败')}</div>`;
+                return;
+            }
+
+            renderPrecheckResult(data);
+        } catch (error) {
+            console.error('预检失败:', error);
+            container.innerHTML = '<div class="precheck-line bad">预检请求失败</div>';
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    function renderPrecheckResult(data) {
+        const container = document.getElementById('precheckResult');
+        const blocked = (data.results || []).filter(item => !item.can_send);
+
+        const head = `
+            <div class="precheck-head">
+                <span>${data.summary.sendable} 个可发送，${data.summary.blocked} 个发不出去</span>
+                ${blocked.length ? '<button type="button" class="btn-link" onclick="dropBlockedTargets()">从选择中移除</button>' : ''}
+            </div>
+        `;
+
+        if (!blocked.length) {
+            container.innerHTML = head + '<div class="precheck-line ok">所选目标都可以发送</div>';
+            return;
+        }
+
+        // 结果可能上百条，只展示前 30 条明细，其余用汇总数字表示
+        const lines = blocked.slice(0, 30).map(item => `
+            <div class="precheck-line bad">
+                <span>${escapeHtml(item.title || item.target)}</span>
+                <span>${PRECHECK_TEXT[item.code] || item.code}</span>
+            </div>
+        `).join('');
+
+        container.innerHTML = head + lines +
+            (blocked.length > 30 ? `<div class="precheck-line">另有 ${blocked.length - 30} 个目标发不出去</div>` : '');
+
+        container.dataset.blocked = JSON.stringify(blocked.map(item => String(item.target)));
+    }
+
+    function dropBlockedTargets() {
+        const container = document.getElementById('precheckResult');
+        const blocked = JSON.parse(container.dataset.blocked || '[]');
+
+        blocked.forEach(target => selectedTargets.delete(target));
+
+        // 手动填进去的 ID 不在勾选列表里，需要单独清掉
+        const manual = document.getElementById('target-manual-ids');
+        manual.value = manual.value
+            .split(/[\s,，]+/)
+            .map(text => text.trim())
+            .filter(text => text && !blocked.includes(text))
+            .join('\n');
+
+        renderTargetOptions();
+        container.style.display = 'none';
+        showNotification(`已移除 ${blocked.length} 个发不出去的目标`, 'success');
     }
 
     async function loadAccounts() {
@@ -1525,6 +1694,7 @@
         document.getElementById('messageForm').reset();
         resetTargetSelection();
         document.getElementById('send-interval').value = 5;
+        document.getElementById('precheck-enabled').checked = true;
         document.getElementById('messageModal').classList.add('show');
         loadTargetOptions();
     }
@@ -1553,6 +1723,7 @@
         getMessageTargets(msg).forEach(target => selectedTargets.add(String(target)));
         updateTargetCount();
         document.getElementById('send-interval').value = msg.send_interval ?? 5;
+        document.getElementById('precheck-enabled').checked = msg.precheck !== false;
         loadTargetOptions();
         
         const scheduleMode = msg.schedule_mode || 'cron';
@@ -1647,7 +1818,8 @@
             random_delay: parseInt(document.getElementById('random-delay').value) || 0,
             delete_after_send: document.getElementById('delete-after-send').checked,
             max_executions: maxExecutions,
-            send_interval: parseFloat(document.getElementById('send-interval').value) || 0
+            send_interval: parseFloat(document.getElementById('send-interval').value) || 0,
+            precheck: document.getElementById('precheck-enabled').checked
         };
         
         console.log('保存定时消息，数据:', formData);

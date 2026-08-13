@@ -920,6 +920,7 @@ class MonitorEngine(metaclass=Singleton):
                 'channel_id': target_ids[0],
                 'target_ids': target_ids,
                 'send_interval': getattr(config, 'send_interval', 5),
+                'precheck': getattr(config, 'precheck', True),
                 'message': config.message,
                 'cron': config.cron,
                 'schedule': config.cron,
@@ -1043,19 +1044,37 @@ class MonitorEngine(metaclass=Singleton):
 
         return text
 
+    @staticmethod
+    def _is_spamblock_error(error: Exception) -> bool:
+        """判断这个异常是不是账号级风控，而不是单个群的问题"""
+        name = error.__class__.__name__
+        if name in ('PeerFloodError', 'UserRestrictedError', 'UserDeactivatedBanError'):
+            return True
+
+        text = str(error).upper()
+        return 'PEER_FLOOD' in text or 'USER_RESTRICTED' in text or 'INPUT_USER_DEACTIVATED' in text
+
     async def _broadcast_to_targets(self, job_id: str, message_config: dict, account,
                                     targets: List[int], message_text: str) -> dict:
         """依次把消息发往所有目标，返回本轮汇总
 
         目标可能成百上千，因此逐个发送、逐个记录失败原因，单个目标出错不影响其余目标。
         """
+        from core.account_health_store import AccountHealthStore
+        from services.precheck_service import PrecheckService
+
         interval = message_config.get('send_interval', 5)
         try:
             interval = max(0.0, float(interval))
         except (TypeError, ValueError):
             interval = 5.0
 
-        summary = {'total': len(targets), 'success': 0, 'failed': 0, 'failures': []}
+        precheck_enabled = message_config.get('precheck', True)
+        precheck = PrecheckService() if precheck_enabled else None
+
+        summary = {'total': len(targets), 'success': 0, 'failed': 0, 'skipped': 0,
+                   'failures': [], 'skips': []}
+        sent_any = False
 
         for index, target_id in enumerate(targets):
             # 群发途中被暂停或删除时立即停手，避免继续骚扰剩余群组
@@ -1064,13 +1083,22 @@ class MonitorEngine(metaclass=Singleton):
                 summary['stopped'] = True
                 break
 
-            if index > 0 and interval > 0:
+            if precheck:
+                # 预检发不出去的目标直接跳过，省掉一次必然失败的发送请求
+                check = await precheck.check_target(account.client, target_id)
+                if PrecheckService.is_blocking(check['code']):
+                    self.logger.info(f"⏭️ 跳过目标 {target_id}: {check['reason']}")
+                    self._collect_skip(summary, target_id, check['reason'])
+                    continue
+
+            if sent_any and interval > 0:
                 await asyncio.sleep(interval)
 
             try:
                 # send_message 内部会解析实体，无需额外 get_entity，省掉一半 API 调用
                 await account.client.send_message(target_id, message_text)
                 summary['success'] += 1
+                sent_any = True
 
             except Exception as send_error:
                 wait_seconds = getattr(send_error, 'seconds', None)
@@ -1087,11 +1115,26 @@ class MonitorEngine(metaclass=Singleton):
                     try:
                         await account.client.send_message(target_id, message_text)
                         summary['success'] += 1
+                        sent_any = True
                         continue
                     except Exception as retry_error:
                         send_error = retry_error
 
                 reason = str(send_error) or send_error.__class__.__name__
+
+                if self._is_spamblock_error(send_error):
+                    # 账号级风控，继续发只会加重处罚，立刻标记并中止本轮
+                    account_id = message_config.get('account_id')
+                    if account_id:
+                        AccountHealthStore().mark_limited(
+                            account_id, f"群发时触发风控: {reason}", source='error'
+                        )
+                    self.logger.error(f"⛔ 账号 {account_id} 触发风控，中止本轮群发: {reason}")
+                    self._collect_failure(summary, target_id, f"账号触发风控: {reason}")
+                    summary['stopped'] = True
+                    summary['account_limited'] = True
+                    break
+
                 self.logger.error(f"❌ 发送失败 {target_id}: {reason}")
                 self._collect_failure(summary, target_id, reason)
 
@@ -1103,6 +1146,13 @@ class MonitorEngine(metaclass=Singleton):
         summary['failed'] += 1
         if len(summary['failures']) < 50:
             summary['failures'].append({'target_id': target_id, 'error': reason})
+
+    @staticmethod
+    def _collect_skip(summary: dict, target_id: int, reason: str):
+        """预检未通过的目标同样只留前 50 条明细"""
+        summary['skipped'] += 1
+        if len(summary['skips']) < 50:
+            summary['skips'].append({'target_id': target_id, 'error': reason})
 
     async def _execute_scheduled_message(self, job_id: str):
         message_config = None
@@ -1164,6 +1214,20 @@ class MonitorEngine(metaclass=Singleton):
                 self._record_send_result(
                     message_config, job_id, 'failed', message=message_text,
                     error=f"账号 {account_id} 未找到或未连接", stage='account'
+                )
+                self._save_scheduled_messages()
+                return
+
+            from core.account_health_store import AccountHealthStore
+            health_store = AccountHealthStore()
+
+            if health_store.is_limited(account_id):
+                # 受限的号继续群发只会加重处罚，而且一条也发不出去
+                reason = health_store.describe(account_id)
+                self.logger.warning(f"⛔ 账号处于受限状态，跳过本轮群发: {account_id}（{reason}）")
+                self._record_send_result(
+                    message_config, job_id, 'skipped', message=message_text,
+                    error=reason, stage='account'
                 )
                 self._save_scheduled_messages()
                 return
@@ -1252,10 +1316,16 @@ class MonitorEngine(metaclass=Singleton):
                 self._running_scheduled_jobs.discard(job_id)
 
             if summary['success'] == 0:
-                self.logger.error(f"❌ 定时消息全部发送失败: {job_id}（共 {summary['total']} 个目标）")
+                # 一条都没发出去：全被预检拦下算跳过，真发失败才算失败
+                all_skipped = summary['failed'] == 0 and summary.get('skipped')
+                status = 'skipped' if all_skipped else 'failed'
+                reason = (f"全部 {summary['skipped']} 个目标预检未通过"
+                          if all_skipped else self._summarize_failures(summary))
+
+                self.logger.error(f"❌ 定时消息未发出任何消息: {job_id}（共 {summary['total']} 个目标）")
                 self._record_send_result(
-                    message_config, job_id, 'failed', message=message_text,
-                    error=self._summarize_failures(summary), stage='send', targets=summary
+                    message_config, job_id, status, message=message_text,
+                    error=reason, stage='send', targets=summary
                 )
                 self._save_scheduled_messages()
                 return
@@ -1265,16 +1335,22 @@ class MonitorEngine(metaclass=Singleton):
             new_count = message_config['execution_count']
             max_executions = message_config.get('max_executions')
 
-            partial = summary['failed'] > 0
+            skipped = summary.get('skipped', 0)
+            partial = summary['failed'] > 0 or skipped > 0
+            reason = self._summarize_failures(summary)
+            if skipped and not reason:
+                reason = f"{skipped} 个目标预检未通过，已跳过"
+
             self._record_send_result(
                 message_config, job_id, 'partial' if partial else 'success', message=message_text,
-                error=self._summarize_failures(summary) if partial else None,
+                error=reason if partial else None,
                 stage='send' if partial else None, targets=summary
             )
             
             self.logger.info(
                 f"✅ 定时消息执行完成: {job_id}，成功 {summary['success']}/{summary['total']} 个目标"
-                + (f"，失败 {summary['failed']} 个" if partial else "")
+                + (f"，失败 {summary['failed']} 个" if summary['failed'] else "")
+                + (f"，跳过 {skipped} 个" if skipped else "")
             )
             self.logger.info(f"📊 执行统计更新: {old_count} → {new_count}/{max_executions or '无限制'} 次")
             if random_delay > 0:

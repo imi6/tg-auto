@@ -28,6 +28,7 @@ from core.account_manager import AccountFactory
 from core.join_task_manager import JoinTaskManager
 from core.profile_task_manager import ProfileTaskManager
 from core.group_library_store import GroupLibraryStore
+from core.account_health_store import AccountHealthStore
 from core.proxy_manager import ProxyManager
 from core.send_record_store import SendRecordStore
 from utils.session_meta import parse_session_metadata
@@ -37,6 +38,8 @@ from models.task import STATUS_SUCCESS
 from monitors import monitor_factory, AIMonitorBuilder
 from services import AIService
 from services.group_service import GroupService
+from services.health_service import HealthService, STATE_LIMITED
+from services.precheck_service import PrecheckService
 from services.profile_service import (
     ABOUT_MAX,
     ABOUT_MAX_PREMIUM,
@@ -156,6 +159,16 @@ class BatchJoinRequest(BaseModel):
     save_to_library: bool = False
 
 
+class HealthCheckRequest(BaseModel):
+    # 留空表示检测全部账号
+    account_ids: List[str] = []
+
+
+class PrecheckRequest(BaseModel):
+    account_id: str
+    target_ids: List[int]
+
+
 class GroupLibraryRequest(BaseModel):
     targets: Union[str, List[str]] = ""
     tag: str = ""
@@ -211,6 +224,9 @@ class WebApp:
         self.join_task_manager = JoinTaskManager()
         self.profile_task_manager = ProfileTaskManager()
         self.group_library = GroupLibraryStore()
+        self.health_service = HealthService()
+        self.health_store = AccountHealthStore()
+        self.precheck_service = PrecheckService()
         self.logger = get_logger(__name__)
         
         self.websocket_connections: List[WebSocket] = []
@@ -950,7 +966,9 @@ class WebApp:
                         "status_display": status_display,
                         "is_valid": is_valid,
                         "proxy_id": proxy_id,
-                        "proxy_name": proxy_name
+                        "proxy_name": proxy_name,
+                        "health": self.health_store.get(account.account_id),
+                        "is_limited": self.health_store.is_limited(account.account_id)
                     }
                     accounts_info.append(account_info)
                 
@@ -1963,8 +1981,19 @@ class WebApp:
             if not parsed["targets"]:
                 return {"success": False, "message": "没有可用的入群目标，请检查输入的群组链接"}
             
+            # 受限的号入群只会失败，还会把封禁坐实，直接摘掉
+            limited = self.health_store.limited_accounts(join_request.account_ids)
+            account_ids = [aid for aid in join_request.account_ids if aid not in limited]
+            
+            if not account_ids:
+                return {
+                    "success": False,
+                    "limited": limited,
+                    "message": f"所选账号都处于受限状态（{', '.join(limited)}），请先在账号管理里复检"
+                }
+            
             task = self.join_task_manager.create_task(
-                account_ids=join_request.account_ids,
+                account_ids=account_ids,
                 targets=parsed["targets"],
                 options={
                     "delay_min": join_request.delay_min,
@@ -1978,11 +2007,16 @@ class WebApp:
                 self.group_library.add_many(join_request.targets)
             self.group_library.mark_used(parsed["targets"])
             
+            message = f"任务已启动：{len(account_ids)} 个账号 x {len(task['items'])} 个群组"
+            if limited:
+                message += f"（已跳过 {len(limited)} 个受限账号）"
+            
             return {
                 "success": True,
                 "task": task,
                 "invalid": parsed["invalid"],
-                "message": f"任务已启动：{len(join_request.account_ids)} 个账号 x {len(task['items'])} 个群组"
+                "limited": limited,
+                "message": message
             }
         
         @self.app.get("/api/groups/join-tasks")
@@ -2191,6 +2225,86 @@ class WebApp:
             result = await self.profile_service.check_username(client, check_request.username)
             return {"success": True, **result}
         
+        @self.app.get("/api/accounts/health")
+        async def list_account_health(request: Request):
+            user = self.get_current_user(request)
+            return {"success": True, "health": self.health_store.all()}
+        
+        @self.app.post("/api/accounts/{account_id}/health-check")
+        async def check_account_health(request: Request, account_id: str):
+            user = self.get_current_user(request)
+            
+            client = await self.get_connected_client(account_id)
+            if not client:
+                return {"success": False, "message": "账号未登录，无法检测"}
+            
+            result = await self.health_service.check_account(client)
+            record = self.health_store.set_result(account_id, result)
+            
+            self.logger.info(f"账号 {account_id} 健康检测: {record['state']} - {record['message'][:60]}")
+            return {"success": True, "account_id": account_id, "health": record}
+        
+        @self.app.post("/api/accounts/health-check")
+        async def check_accounts_health(request: Request, health_request: HealthCheckRequest):
+            user = self.get_current_user(request)
+            
+            account_ids = health_request.account_ids or [
+                account.account_id for account in self.account_manager.list_accounts()
+            ]
+            if not account_ids:
+                return {"success": False, "message": "没有可检测的账号"}
+            
+            # @SpamBot 是同一个机器人，并发太高容易被限流，这里串行且带间隔
+            results = []
+            for index, account_id in enumerate(account_ids):
+                if index > 0:
+                    await asyncio.sleep(2)
+                
+                try:
+                    client = await self.get_connected_client(account_id)
+                except HTTPException:
+                    results.append({"account_id": account_id, "success": False, "message": "账号不存在"})
+                    continue
+                
+                if not client:
+                    results.append({"account_id": account_id, "success": False, "message": "账号未登录"})
+                    continue
+                
+                result = await self.health_service.check_account(client)
+                record = self.health_store.set_result(account_id, result)
+                results.append({"account_id": account_id, "success": True, "health": record})
+            
+            limited = [r["account_id"] for r in results if r.get("health", {}).get("state") == STATE_LIMITED]
+            checked = sum(1 for r in results if r["success"])
+            
+            self.logger.info(f"批量健康检测完成：检测 {checked} 个账号，受限 {len(limited)} 个")
+            return {
+                "success": True,
+                "results": results,
+                "limited": limited,
+                "message": f"已检测 {checked} 个账号，其中 {len(limited)} 个受限"
+            }
+        
+        @self.app.post("/api/targets/precheck")
+        async def precheck_targets(request: Request, precheck_request: PrecheckRequest):
+            user = self.get_current_user(request)
+            
+            if not precheck_request.target_ids:
+                return {"success": False, "message": "请先选择要预检的目标"}
+            
+            client = await self.get_connected_client(precheck_request.account_id)
+            if not client:
+                return {"success": False, "message": "账号未登录，无法预检"}
+            
+            outcome = await self.precheck_service.check_targets(client, precheck_request.target_ids)
+            summary = outcome["summary"]
+            
+            return {
+                "success": True,
+                **outcome,
+                "message": f"{summary['sendable']}/{summary['total']} 个目标可以发送"
+            }
+        
         @self.app.get("/api/profile/limits")
         async def get_profile_limits(request: Request):
             user = self.get_current_user(request)
@@ -2356,7 +2470,8 @@ class WebApp:
                     max_executions=max_executions,
                     execution_count=0,
                     use_ai=message.get("use_ai", False),
-                    ai_prompt=message.get("ai_prompt")
+                    ai_prompt=message.get("ai_prompt"),
+                    precheck=bool(message.get("precheck", True))
                 ))
                 
                 return {
@@ -2477,6 +2592,7 @@ class WebApp:
                             'target_id': target_ids[0],
                             'target_ids': target_ids,
                             'send_interval': self.parse_send_interval(data),
+                            'precheck': bool(data.get('precheck', True)),
                             'schedule': new_cron,
                             'cron': new_cron,
                             'use_ai': data.get('use_ai', False),

@@ -176,6 +176,8 @@ class ScheduledMessageConfig:
     target_ids: List[int] = field(default_factory=list)
     # 群发时每个目标之间的间隔秒数，避免触发 Telegram 限流
     send_interval: float = 5
+    # 发送前检查目标是否禁言、是否已被移出，跳过发不出去的目标
+    precheck: bool = True
     
     def __post_init__(self):
         if not self.target_ids and self.target_id:
