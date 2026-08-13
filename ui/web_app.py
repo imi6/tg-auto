@@ -1712,7 +1712,7 @@ class WebApp:
                 "success": True,
                 "task": task,
                 "invalid": parsed["invalid"],
-                "message": f"任务已启动：{len(join_request.account_ids)} 个账号 x {len(task['targets'])} 个群组"
+                "message": f"任务已启动：{len(join_request.account_ids)} 个账号 x {len(task['items'])} 个群组"
             }
         
         @self.app.get("/api/groups/join-tasks")

@@ -14,7 +14,9 @@ pydantic>=2.5.0
 
 # Telegram客户端
 telethon>=1.30.0
+# PySocks 供代理连通性自测使用；Telethon 自身走代理依赖 python-socks，缺少时会静默忽略 proxy 参数
 PySocks==1.7.1
+python-socks[asyncio]>=2.4.3
 
 # 邮件发送
 aiosmtplib>=3.0.0

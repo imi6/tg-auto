@@ -17,6 +17,18 @@ import socks
 from utils.logger import get_logger
 from utils.singleton import Singleton
 
+# Telethon 只在装了 python-socks 时才会真正使用 proxy 参数，否则静默直连
+try:
+    import python_socks  # noqa: F401
+    PYTHON_SOCKS_AVAILABLE = True
+except ImportError:
+    PYTHON_SOCKS_AVAILABLE = False
+
+MISSING_SOCKS_HINT = (
+    "服务器未安装 python-socks，Telegram 连接不会走代理（Telethon 会静默忽略代理设置），"
+    "请执行 pip install \"python-socks[asyncio]\" 后重启服务"
+)
+
 SUPPORTED_TYPES = ('socks5', 'socks4', 'http')
 
 _SOCKS_TYPES = {
@@ -73,6 +85,9 @@ class ProxyManager(metaclass=Singleton):
                 self.proxies[proxy['proxy_id']] = proxy
 
             self.logger.info(f"已加载 {len(self.proxies)} 个代理配置")
+
+            if self.proxies and not PYTHON_SOCKS_AVAILABLE:
+                self.logger.warning(MISSING_SOCKS_HINT)
         except Exception as e:
             self.logger.error(f"加载代理配置失败: {e}")
 
@@ -228,7 +243,11 @@ class ProxyManager(metaclass=Singleton):
             return {'ok': False, 'message': '代理配置不完整', 'latency_ms': 0}
 
         result = await self._test_via_socket(telethon_proxy)
-        if result['ok'] and api_id and api_hash:
+        
+        if result['ok'] and not PYTHON_SOCKS_AVAILABLE:
+            # 此时 Telethon 会绕过代理直连，握手测试必然"成功"，结果没有参考价值
+            result = {**result, 'ok': False, 'message': MISSING_SOCKS_HINT}
+        elif result['ok'] and api_id and api_hash:
             result = await self._test_via_telegram(telethon_proxy, api_id, api_hash)
 
         if proxy_id and proxy_id in self.proxies:
