@@ -26,6 +26,7 @@ class MonitorEngine(metaclass=Singleton):
         self.monitors: Dict[str, List[BaseMonitor]] = {}
         self.processed_messages: Set[str] = set()
         self.scheduled_messages: List[Dict] = []
+        self._running_scheduled_jobs: Set[str] = set()
         self.logger = get_logger(__name__)
         self.monitors_file = Path("data/monitor_configs.json")
         self.scheduled_messages_file = Path("data/scheduled_messages.json")
@@ -911,10 +912,14 @@ class MonitorEngine(metaclass=Singleton):
 
     def add_scheduled_message(self, config):
         try:
+            target_ids = list(getattr(config, 'target_ids', None) or [config.target_id])
+            
             message_dict = {
                 'job_id': config.job_id,
-                'target_id': config.target_id,
-                'channel_id': config.target_id,
+                'target_id': target_ids[0],
+                'channel_id': target_ids[0],
+                'target_ids': target_ids,
+                'send_interval': getattr(config, 'send_interval', 5),
                 'message': config.message,
                 'cron': config.cron,
                 'schedule': config.cron,
@@ -979,9 +984,29 @@ class MonitorEngine(metaclass=Singleton):
     def get_scheduled_messages(self):
         return self.scheduled_messages
 
+    @staticmethod
+    def get_message_targets(message_config: dict) -> List[int]:
+        """取出任务的目标列表，兼容只有单个 target_id 的旧配置"""
+        raw_targets = message_config.get('target_ids')
+        if not raw_targets:
+            raw_targets = [message_config.get('target_id') or message_config.get('channel_id')]
+
+        targets = []
+        for raw in raw_targets:
+            if raw in (None, ''):
+                continue
+            try:
+                target = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if target not in targets:
+                targets.append(target)
+
+        return targets
+
     def _record_send_result(self, message_config: Optional[dict], job_id: str, status: str,
                             message: str = '', error: Optional[str] = None,
-                            stage: Optional[str] = None):
+                            stage: Optional[str] = None, targets: Optional[dict] = None):
         """记录一次发送结果，并把最近状态回写到任务上供列表展示"""
         from core.send_record_store import SendRecordStore
 
@@ -993,7 +1018,8 @@ class MonitorEngine(metaclass=Singleton):
             target_id=config.get('target_id'),
             message=message,
             error=error,
-            stage=stage
+            stage=stage,
+            targets=targets
         )
 
         if message_config is not None:
@@ -1002,6 +1028,81 @@ class MonitorEngine(metaclass=Singleton):
             message_config['last_error'] = error
 
         return record
+
+    @staticmethod
+    def _summarize_failures(summary: dict) -> Optional[str]:
+        """把失败明细压成一句话，方便直接显示在列表里"""
+        failures = summary.get('failures') or []
+        if not failures:
+            return None
+
+        first = failures[0]
+        text = f"{first['target_id']}: {first['error']}"
+        if summary['failed'] > 1:
+            text += f"（另有 {summary['failed'] - 1} 个目标失败）"
+
+        return text
+
+    async def _broadcast_to_targets(self, job_id: str, message_config: dict, account,
+                                    targets: List[int], message_text: str) -> dict:
+        """依次把消息发往所有目标，返回本轮汇总
+
+        目标可能成百上千，因此逐个发送、逐个记录失败原因，单个目标出错不影响其余目标。
+        """
+        interval = message_config.get('send_interval', 5)
+        try:
+            interval = max(0.0, float(interval))
+        except (TypeError, ValueError):
+            interval = 5.0
+
+        summary = {'total': len(targets), 'success': 0, 'failed': 0, 'failures': []}
+
+        for index, target_id in enumerate(targets):
+            # 群发途中被暂停或删除时立即停手，避免继续骚扰剩余群组
+            if not message_config.get('active', True):
+                self.logger.warning(f"定时消息在群发途中被暂停，剩余 {len(targets) - index} 个目标未发送: {job_id}")
+                summary['stopped'] = True
+                break
+
+            if index > 0 and interval > 0:
+                await asyncio.sleep(interval)
+
+            try:
+                # send_message 内部会解析实体，无需额外 get_entity，省掉一半 API 调用
+                await account.client.send_message(target_id, message_text)
+                summary['success'] += 1
+
+            except Exception as send_error:
+                wait_seconds = getattr(send_error, 'seconds', None)
+                if isinstance(wait_seconds, int) and wait_seconds > 0:
+                    # FloodWait：等满再重试一次，超过 5 分钟就放弃本轮，留到下次触发
+                    if wait_seconds > 300:
+                        self.logger.error(f"⛔ 触发限流需等待 {wait_seconds} 秒，中止本轮群发: {job_id}")
+                        self._collect_failure(summary, target_id, f"触发限流，需等待 {wait_seconds} 秒，已中止本轮")
+                        summary['stopped'] = True
+                        break
+
+                    self.logger.warning(f"⏳ 触发限流，等待 {wait_seconds} 秒后重试目标 {target_id}")
+                    await asyncio.sleep(wait_seconds + 1)
+                    try:
+                        await account.client.send_message(target_id, message_text)
+                        summary['success'] += 1
+                        continue
+                    except Exception as retry_error:
+                        send_error = retry_error
+
+                reason = str(send_error) or send_error.__class__.__name__
+                self.logger.error(f"❌ 发送失败 {target_id}: {reason}")
+                self._collect_failure(summary, target_id, reason)
+
+        return summary
+
+    @staticmethod
+    def _collect_failure(summary: dict, target_id: int, reason: str):
+        """累计失败数，明细只留前 50 条，避免上千目标撑爆记录文件"""
+        summary['failed'] += 1
+        if len(summary['failures']) < 50:
+            summary['failures'].append({'target_id': target_id, 'error': reason})
 
     async def _execute_scheduled_message(self, job_id: str):
         message_config = None
@@ -1020,6 +1121,16 @@ class MonitorEngine(metaclass=Singleton):
                 self.logger.debug(f"定时消息已暂停，跳过执行: {job_id}")
                 return
 
+            # 群发几百上千个目标可能跑过下一次触发时间，重入会造成重复发送
+            if job_id in self._running_scheduled_jobs:
+                self.logger.warning(f"上一轮群发尚未结束，跳过本次触发: {job_id}")
+                self._record_send_result(
+                    message_config, job_id, 'skipped',
+                    error="上一轮群发尚未结束，本次触发已跳过", stage='running'
+                )
+                self._save_scheduled_messages()
+                return
+
             max_executions = message_config.get('max_executions')
             execution_count = message_config.get('execution_count', 0)
 
@@ -1032,11 +1143,11 @@ class MonitorEngine(metaclass=Singleton):
                 return
 
             account_id = message_config.get('account_id')
-            target_id = message_config.get('target_id')
+            targets = self.get_message_targets(message_config)
             message_text = message_config.get('message', '')
 
-            if not account_id or not target_id:
-                self.logger.error(f"定时消息配置不完整: account_id={account_id}, target_id={target_id}")
+            if not account_id or not targets:
+                self.logger.error(f"定时消息配置不完整: account_id={account_id}, targets={targets}")
                 self._record_send_result(
                     message_config, job_id, 'failed', message=message_text,
                     error="配置不完整，缺少账号或目标", stage='config'
@@ -1069,7 +1180,7 @@ class MonitorEngine(metaclass=Singleton):
                         enhanced_prompt = f"""
 当前时间: {current_time}
 任务ID: {job_id}
-目标聊天: {target_id}
+目标聊天: {', '.join(str(t) for t in targets[:20])}
 
 用户提示词: {message_config.get('ai_prompt')}
 
@@ -1132,39 +1243,19 @@ class MonitorEngine(metaclass=Singleton):
                 self.logger.info(f"⏰ 定时消息延时发送: {actual_delay} 秒 (最大延时: {random_delay} 秒)")
                 await asyncio.sleep(actual_delay)
 
+            self._running_scheduled_jobs.add(job_id)
             try:
-                if isinstance(target_id, str):
-                    target_id = int(target_id)
-
-                try:
-                    entity = await account.client.get_entity(target_id)
-                    self.logger.debug(
-                        f"✅ 目标实体验证成功: {target_id} -> {getattr(entity, 'title', getattr(entity, 'username', target_id))}")
-                except Exception as entity_error:
-                    self.logger.error(f"❌ 无法找到目标实体 {target_id}: {entity_error}")
-                    self.logger.error(f"💡 解决方案：请检查目标ID是否正确，或账号是否有权限访问此频道/群组")
-                    self._record_send_result(
-                        message_config, job_id, 'failed', message=message_text,
-                        error=f"找不到目标或无访问权限: {entity_error}", stage='entity'
-                    )
-                    self._save_scheduled_messages()
-                    return
-
-                await account.client.send_message(target_id, message_text)
-
-            except ValueError as ve:
-                self.logger.error(f"❌ 无效的目标ID格式: {target_id}, 错误: {ve}")
-                self._record_send_result(
-                    message_config, job_id, 'failed', message=message_text,
-                    error=f"无效的目标ID格式: {ve}", stage='target'
+                summary = await self._broadcast_to_targets(
+                    job_id, message_config, account, targets, message_text
                 )
-                self._save_scheduled_messages()
-                return
-            except Exception as send_error:
-                self.logger.error(f"❌ 发送消息失败到目标 {target_id}: {send_error}")
+            finally:
+                self._running_scheduled_jobs.discard(job_id)
+
+            if summary['success'] == 0:
+                self.logger.error(f"❌ 定时消息全部发送失败: {job_id}（共 {summary['total']} 个目标）")
                 self._record_send_result(
                     message_config, job_id, 'failed', message=message_text,
-                    error=str(send_error), stage='send'
+                    error=self._summarize_failures(summary), stage='send', targets=summary
                 )
                 self._save_scheduled_messages()
                 return
@@ -1174,9 +1265,17 @@ class MonitorEngine(metaclass=Singleton):
             new_count = message_config['execution_count']
             max_executions = message_config.get('max_executions')
 
-            self._record_send_result(message_config, job_id, 'success', message=message_text)
+            partial = summary['failed'] > 0
+            self._record_send_result(
+                message_config, job_id, 'partial' if partial else 'success', message=message_text,
+                error=self._summarize_failures(summary) if partial else None,
+                stage='send' if partial else None, targets=summary
+            )
             
-            self.logger.info(f"✅ 定时消息执行成功: {job_id} -> {target_id}")
+            self.logger.info(
+                f"✅ 定时消息执行完成: {job_id}，成功 {summary['success']}/{summary['total']} 个目标"
+                + (f"，失败 {summary['failed']} 个" if partial else "")
+            )
             self.logger.info(f"📊 执行统计更新: {old_count} → {new_count}/{max_executions or '无限制'} 次")
             if random_delay > 0:
                 self.logger.info(f"⏰ 延时设置: {random_delay} 秒")

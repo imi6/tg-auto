@@ -15,6 +15,7 @@ from utils.logger import get_logger
 from utils.singleton import Singleton
 
 STATUS_SUCCESS = 'success'
+STATUS_PARTIAL = 'partial'
 STATUS_FAILED = 'failed'
 STATUS_SKIPPED = 'skipped'
 
@@ -60,11 +61,13 @@ class SendRecordStore(metaclass=Singleton):
         target_id: Any = None,
         message: str = '',
         error: Optional[str] = None,
-        stage: Optional[str] = None
+        stage: Optional[str] = None,
+        targets: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """追加一条发送记录
 
-        stage 用于区分失败发生在哪一步（如 ai / entity / send），方便排查。
+        一次执行只记一条：群发多个目标时，targets 里带上成功/失败数与失败明细，
+        避免上千个目标产生上千条记录。stage 用于区分失败发生在哪一步。
         """
         preview = (message or '').strip().replace('\n', ' ')
         if len(preview) > PREVIEW_LENGTH:
@@ -79,6 +82,7 @@ class SendRecordStore(metaclass=Singleton):
             'stage': stage,
             'error': error,
             'preview': preview,
+            'targets': targets or None,
             'time': datetime.now().isoformat(timespec='seconds'),
         }
 
@@ -114,8 +118,11 @@ class SendRecordStore(metaclass=Singleton):
         return {
             'total': len(records),
             'success': sum(1 for r in records if r.get('status') == STATUS_SUCCESS),
+            'partial': sum(1 for r in records if r.get('status') == STATUS_PARTIAL),
             'failed': sum(1 for r in records if r.get('status') == STATUS_FAILED),
             'skipped': sum(1 for r in records if r.get('status') == STATUS_SKIPPED),
+            'messages_sent': sum((r.get('targets') or {}).get('success', 1 if r.get('status') == STATUS_SUCCESS else 0)
+                                 for r in records),
         }
 
     def clear(self, job_id: Optional[str] = None) -> int:

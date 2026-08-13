@@ -172,6 +172,16 @@ class ScheduledMessageConfig:
     use_ai: bool = False
     ai_prompt: Optional[str] = None
     schedule_mode: str = "cron"
+    # 一条任务可以发往多个目标，为空时退回到 target_id
+    target_ids: List[int] = field(default_factory=list)
+    # 群发时每个目标之间的间隔秒数，避免触发 Telegram 限流
+    send_interval: float = 5
+    
+    def __post_init__(self):
+        if not self.target_ids and self.target_id:
+            self.target_ids = [self.target_id]
+        if self.target_ids and not self.target_id:
+            self.target_id = self.target_ids[0]
     
     def is_execution_limit_reached(self) -> bool:
         if self.max_executions is None:

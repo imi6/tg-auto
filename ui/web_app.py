@@ -298,37 +298,21 @@ class WebApp:
         return target_ids
     
     @staticmethod
-    def fanout_scheduled_message(engine, payload: Dict[str, Any], target_ids: List[int],
-                                 max_executions: Optional[int]) -> List[str]:
-        """按给定目标批量新建定时消息，返回新建的 job_id 列表
+    def parse_send_interval(payload: Dict[str, Any]) -> float:
+        """群发时每个目标之间的间隔秒数"""
+        raw = payload.get("send_interval", 5)
+        if raw in (None, ""):
+            return 5.0
 
-        创建和编辑共用：多选的每个目标各自独立成一条任务，便于单独暂停或删除。
-        """
-        from models.config import ScheduledMessageConfig
-        import uuid
-        
-        schedule_expr = payload.get("schedule", payload.get("cron", ""))
-        job_ids = []
-        
-        for target_id in target_ids:
-            job_id = str(uuid.uuid4())
-            engine.add_scheduled_message(ScheduledMessageConfig(
-                job_id=job_id,
-                target_id=target_id,
-                message=payload.get("message", ""),
-                schedule_mode=payload.get("schedule_mode", "cron"),
-                cron=schedule_expr,
-                random_offset=payload.get("random_delay", payload.get("random_offset", 0)),
-                delete_after_sending=payload.get("delete_after_send", payload.get("delete_after_sending", False)),
-                account_id=payload.get("account_id"),
-                max_executions=max_executions,
-                execution_count=0,
-                use_ai=payload.get("use_ai", False),
-                ai_prompt=payload.get("ai_prompt")
-            ))
-            job_ids.append(job_id)
-        
-        return job_ids
+        try:
+            interval = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="发送间隔必须是数字")
+
+        if interval < 0:
+            raise HTTPException(status_code=400, detail="发送间隔不能为负数")
+
+        return interval
     
     def borrow_account_credentials(self) -> Optional[tuple]:
         """借用任一已有账号的 API 凭据
@@ -2107,15 +2091,33 @@ class WebApp:
                     raise HTTPException(status_code=400, detail="消息内容或AI提示词不能为空")
                 
                 from core import MonitorEngine
-                engine = MonitorEngine()
+                from models.config import ScheduledMessageConfig
+                import uuid
                 
-                job_ids = self.fanout_scheduled_message(engine, message, target_ids, max_executions)
+                engine = MonitorEngine()
+                job_id = str(uuid.uuid4())
+                
+                engine.add_scheduled_message(ScheduledMessageConfig(
+                    job_id=job_id,
+                    target_id=target_ids[0],
+                    target_ids=target_ids,
+                    send_interval=self.parse_send_interval(message),
+                    message=message.get("message", ""),
+                    schedule_mode=schedule_mode,
+                    cron=schedule_expr,
+                    random_offset=message.get("random_delay", message.get("random_offset", 0)),
+                    delete_after_sending=message.get("delete_after_send", message.get("delete_after_sending", False)),
+                    account_id=message.get("account_id"),
+                    max_executions=max_executions,
+                    execution_count=0,
+                    use_ai=message.get("use_ai", False),
+                    ai_prompt=message.get("ai_prompt")
+                ))
                 
                 return {
                     "success": True,
-                    "job_id": job_ids[0],
-                    "job_ids": job_ids,
-                    "message": f"已创建 {len(job_ids)} 条定时消息"
+                    "job_id": job_id,
+                    "message": f"定时消息创建成功，共 {len(target_ids)} 个目标"
                 }
                 
             except HTTPException:
@@ -2228,6 +2230,8 @@ class WebApp:
                             'message': data.get('message', ''),
                             'channel_id': target_ids[0],
                             'target_id': target_ids[0],
+                            'target_ids': target_ids,
+                            'send_interval': self.parse_send_interval(data),
                             'schedule': new_cron,
                             'cron': new_cron,
                             'use_ai': data.get('use_ai', False),
@@ -2266,16 +2270,10 @@ class WebApp:
                         
                         engine._save_scheduled_messages()
                         
-                        # 编辑时新增的目标各自成为一条新任务，当前这条只保留第一个目标
-                        added = self.fanout_scheduled_message(engine, data, target_ids[1:], max_executions)
-                        if added:
-                            return {
-                                "success": True,
-                                "job_ids": added,
-                                "message": f"已更新，并为另外 {len(added)} 个目标新建了定时消息"
-                            }
-                        
-                        return {"success": True, "message": "定时消息更新成功"}
+                        return {
+                            "success": True,
+                            "message": f"定时消息更新成功，共 {len(target_ids)} 个目标"
+                        }
                 
                 return {"success": False, "message": "未找到指定的定时消息"}
                 

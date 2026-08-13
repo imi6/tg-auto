@@ -67,9 +67,30 @@
         color: var(--danger-color);
     }
 
-    .record-status.skipped {
+    .record-status.partial {
         background: rgba(245, 158, 11, 0.15);
         color: var(--warning-color, #f59e0b);
+    }
+
+    .record-status.skipped {
+        background: var(--bg-hover);
+        color: var(--text-secondary);
+    }
+
+    .record-failures {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+
+    .record-failures summary {
+        cursor: pointer;
+        color: var(--primary-color);
+    }
+
+    .record-failures > div {
+        padding: 3px 0 3px 12px;
+        word-break: break-word;
     }
 
     .record-body {
@@ -112,8 +133,9 @@
     }
 
     .last-run.success { color: var(--success-color); }
+    .last-run.partial { color: var(--warning-color, #f59e0b); }
     .last-run.failed { color: var(--danger-color); }
-    .last-run.skipped { color: var(--warning-color, #f59e0b); }
+    .last-run.skipped { color: var(--text-muted); }
 
     .target-toolbar {
         display: flex;
@@ -668,9 +690,10 @@
             <div class="record-toolbar">
                 <select class="form-select" id="record-status-filter" onchange="loadRecords()">
                     <option value="">全部状态</option>
-                    <option value="success">仅成功</option>
-                    <option value="failed">仅失败</option>
-                    <option value="skipped">仅跳过</option>
+                    <option value="success">全部成功</option>
+                    <option value="partial">部分失败</option>
+                    <option value="failed">失败</option>
+                    <option value="skipped">跳过</option>
                 </select>
                 <button class="btn btn-sm btn-secondary" onclick="loadRecords()">
                     <i class="bi bi-arrow-clockwise"></i> 刷新
@@ -759,7 +782,17 @@
                                   placeholder="每行一个 ID，例如：-1001234567890"></textarea>
                     </details>
 
-                    <small class="text-muted" id="target-hint">选中多个目标时，会为每个目标各创建一条定时消息</small>
+                    <small class="text-muted" id="target-hint">
+                        选中的所有目标合并为一条定时任务，触发时按下方间隔依次发送
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">目标之间的间隔（秒）</label>
+                    <input type="number" class="form-input" id="send-interval" value="5" min="0" step="0.5">
+                    <small class="text-muted">
+                        群发时每发完一个目标等待的秒数。目标较多时不要设得太小，否则容易触发 Telegram 限流
+                    </small>
                 </div>
                 
                 <div class="form-group">
@@ -1043,10 +1076,11 @@
     
     let recordsJobId = null;
 
-    const RECORD_LABEL = { success: '成功', failed: '失败', skipped: '跳过' };
+    const RECORD_LABEL = { success: '成功', partial: '部分', failed: '失败', skipped: '跳过' };
     const STAGE_LABEL = {
         config: '配置', account: '账号', ai: 'AI 生成', content: '内容',
-        entity: '目标', target: '目标', send: '发送', unknown: '未知'
+        entity: '目标', target: '目标', send: '发送',
+        running: '并发', unknown: '未知'
     };
 
     function showRecordsModal(jobId) {
@@ -1086,10 +1120,12 @@
 
     function renderRecordSummary(stats) {
         document.getElementById('record-summary').innerHTML = `
-            <span>总计<b>${stats.total || 0}</b></span>
-            <span style="color: var(--success-color);">成功<b>${stats.success || 0}</b></span>
+            <span>执行次数<b>${stats.total || 0}</b></span>
+            <span style="color: var(--success-color);">全部成功<b>${stats.success || 0}</b></span>
+            <span style="color: var(--warning-color, #f59e0b);">部分失败<b>${stats.partial || 0}</b></span>
             <span style="color: var(--danger-color);">失败<b>${stats.failed || 0}</b></span>
-            <span style="color: var(--warning-color, #f59e0b);">跳过<b>${stats.skipped || 0}</b></span>
+            <span style="color: var(--text-muted);">跳过<b>${stats.skipped || 0}</b></span>
+            <span>累计发出<b>${stats.messages_sent || 0}</b> 条</span>
         `;
     }
 
@@ -1108,7 +1144,7 @@
                     <div class="record-line">${escapeHtml(record.preview || '（无内容预览）')}</div>
                     <div class="record-meta">
                         ${escapeHtml((record.time || '').replace('T', ' '))}
-                        · 目标 ${escapeHtml(record.target_id)}
+                        · ${formatRecordTargets(record)}
                         · 账号 ${escapeHtml(record.account_id || '未知')}
                     </div>
                     ${record.error ? `
@@ -1116,9 +1152,36 @@
                             ${record.stage ? `[${STAGE_LABEL[record.stage] || record.stage}] ` : ''}${escapeHtml(record.error)}
                         </div>
                     ` : ''}
+                    ${renderFailureList(record)}
                 </div>
             </div>
         `).join('');
+    }
+
+    function formatRecordTargets(record) {
+        const targets = record.targets;
+        if (!targets) return `目标 ${escapeHtml(record.target_id)}`;
+
+        let text = `${targets.total} 个目标：成功 ${targets.success}`;
+        if (targets.failed) text += `，失败 ${targets.failed}`;
+        if (targets.stopped) text += '（中途停止）';
+
+        return text;
+    }
+
+    function renderFailureList(record) {
+        const failures = (record.targets || {}).failures || [];
+        if (failures.length < 2) return '';
+
+        const rows = failures
+            .map(item => `<div>${escapeHtml(item.target_id)}: ${escapeHtml(item.error)}</div>`)
+            .join('');
+        const omitted = record.targets.failed - failures.length;
+
+        return `<details class="record-failures">
+            <summary>查看 ${failures.length} 条失败明细${omitted > 0 ? `（另有 ${omitted} 条未记录）` : ''}</summary>
+            ${rows}
+        </details>`;
     }
 
     async function clearRecords() {
@@ -1141,11 +1204,25 @@
     let selectedTargets = new Set();
     let loadedTargetsFor = null;
 
+    function getMessageTargets(msg) {
+        if (Array.isArray(msg.target_ids) && msg.target_ids.length) return msg.target_ids;
+        const single = msg.target_id ?? msg.channel_id;
+        return single ? [single] : [];
+    }
+
+    function formatTargets(msg) {
+        const targets = getMessageTargets(msg);
+        if (!targets.length) return '未设置';
+        if (targets.length === 1) return escapeHtml(targets[0]);
+        return `${targets.length} 个群组/频道`;
+    }
+
     function formatLastRun(msg) {
         if (!msg.last_run_at) return '';
 
         const icons = {
             success: 'bi-check-circle-fill',
+            partial: 'bi-exclamation-circle-fill',
             failed: 'bi-x-circle-fill',
             skipped: 'bi-slash-circle-fill'
         };
@@ -1420,7 +1497,7 @@
                 <div class="message-card-footer">
                     <div class="message-target" style="flex: 1;">
                         <i class="bi bi-send"></i>
-                        <span>目标: ${msg.channel_id || '未设置'}</span>
+                        <span title="${escapeHtml(getMessageTargets(msg).join('\n'))}">目标: ${formatTargets(msg)}</span>
                         ${msg.max_executions ? `
                             <span style="margin-left: 15px;">
                                 <i class="bi bi-arrow-repeat"></i>
@@ -1447,8 +1524,7 @@
         document.getElementById('modalTitle').textContent = '添加定时消息';
         document.getElementById('messageForm').reset();
         resetTargetSelection();
-        document.getElementById('target-hint').textContent =
-            '选中多个目标时，会为每个目标各创建一条定时消息';
+        document.getElementById('send-interval').value = 5;
         document.getElementById('messageModal').classList.add('show');
         loadTargetOptions();
     }
@@ -1474,12 +1550,9 @@
         toggleMessageType();
         
         resetTargetSelection();
-        if (msg.channel_id) {
-            selectedTargets.add(String(msg.channel_id));
-            updateTargetCount();
-        }
-        document.getElementById('target-hint').textContent =
-            '这条消息保留第一个目标，额外勾选的目标会各自新建一条定时消息';
+        getMessageTargets(msg).forEach(target => selectedTargets.add(String(target)));
+        updateTargetCount();
+        document.getElementById('send-interval').value = msg.send_interval ?? 5;
         loadTargetOptions();
         
         const scheduleMode = msg.schedule_mode || 'cron';
@@ -1573,7 +1646,8 @@
             ai_prompt: messageType === 'ai' ? document.getElementById('ai-prompt').value : '',
             random_delay: parseInt(document.getElementById('random-delay').value) || 0,
             delete_after_send: document.getElementById('delete-after-send').checked,
-            max_executions: maxExecutions
+            max_executions: maxExecutions,
+            send_interval: parseFloat(document.getElementById('send-interval').value) || 0
         };
         
         console.log('保存定时消息，数据:', formData);
@@ -1778,7 +1852,16 @@
                     <p><strong>消息ID:</strong> ${msg.job_id || msg.id}</p>
                     <p><strong>状态:</strong> ${msg.active !== false ? '运行中' : '已暂停'}</p>
                     <p><strong>账号:</strong> ${msg.account_id || '未设置'}</p>
-                    <p><strong>目标频道/群组:</strong> ${msg.channel_id || '未设置'}</p>
+                    <p><strong>目标频道/群组:</strong> ${formatTargets(msg)}</p>
+                    ${getMessageTargets(msg).length > 1 ? `
+                        <details style="margin: -8px 0 12px 0;">
+                            <summary style="cursor: pointer; color: var(--primary-color);">查看全部目标 ID</summary>
+                            <div style="max-height: 160px; overflow-y: auto; font-family: monospace; font-size: 12px; padding: 6px 0;">
+                                ${getMessageTargets(msg).map(t => escapeHtml(t)).join('<br>')}
+                            </div>
+                        </details>
+                        <p><strong>目标间隔:</strong> ${msg.send_interval ?? 5} 秒</p>
+                    ` : ''}
                     <p><strong>调度表达式:</strong> ${msg.schedule || '未设置'}</p>
                     <p><strong>消息类型:</strong> ${msg.use_ai ? 'AI生成' : '固定文本'}</p>
                     ${msg.use_ai ? `<p><strong>AI提示词:</strong> ${msg.ai_prompt || '无'}</p>` : `<p><strong>消息内容:</strong> ${msg.message || '无'}</p>`}
