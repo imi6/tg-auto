@@ -631,30 +631,38 @@
                     </small>
                 </div>
 
-                <div class="form-group">
-                    <label>手机号 <span class="required">*</span></label>
-                    <input type="tel" id="importPhone" placeholder="+86xxxxxxxxxx" required>
-                    <small style="color: var(--text-muted);">与 session 文件对应的手机号</small>
-                </div>
+                <details class="form-group" style="border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px 14px;">
+                    <summary style="cursor: pointer; font-weight: 600; color: var(--text-secondary);">
+                        高级选项（一般无需填写）
+                    </summary>
 
-                <div class="form-group">
-                    <label>API ID <span class="required">*</span></label>
-                    <input type="number" id="importApiId" placeholder="从 my.telegram.org 获取" required>
-                </div>
+                    <div style="margin-top: 14px;">
+                        <div class="form-group">
+                            <label>手机号</label>
+                            <input type="tel" id="importPhone" placeholder="留空则自动读取">
+                            <small style="color: var(--text-muted);">默认从 session 登录的账号信息中自动获取</small>
+                        </div>
 
-                <div class="form-group">
-                    <label>API Hash <span class="required">*</span></label>
-                    <input type="text" id="importApiHash" placeholder="从 my.telegram.org 获取" required>
-                </div>
+                        <div class="form-group">
+                            <label>API ID</label>
+                            <input type="number" id="importApiId" placeholder="留空则使用 .env 中的默认值">
+                        </div>
+
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label>API Hash</label>
+                            <input type="text" id="importApiHash" placeholder="留空则使用 .env 中的默认值">
+                        </div>
+                    </div>
+                </details>
 
                 <div class="alert alert-info" style="margin-top: 16px;">
                     <i class="bi bi-info-circle"></i>
                     <div>
                         <strong>提示：</strong>
                         <ul style="margin: 8px 0 0 20px;">
-                            <li>Session 文件通常位于项目根目录或 sessions 文件夹中</li>
-                            <li>文件名格式：手机号.session（如：15597438221.session）</li>
-                            <li>确保 API ID 和 API Hash 与创建此 session 时使用的一致</li>
+                            <li>只需选择 .session 文件即可导入，手机号会自动识别</li>
+                            <li>API ID 和 API Hash 默认取 .env 中的 TG_API_ID / TG_API_HASH</li>
+                            <li>若该 session 是用另一组 API 凭据创建的，请在高级选项中填写对应的值</li>
                         </ul>
                     </div>
                 </div>
@@ -1118,23 +1126,9 @@
     }
 
     // 导入 Session 文件相关函数
-    async function showImportSessionModal() {
+    function showImportSessionModal() {
+        // API 凭据留空即可，后端会回退到 .env 中的默认配置
         document.getElementById('importSessionModal').classList.add('show');
-
-        try {
-            const response = await fetch('/api/config/defaults');
-            if (response.ok) {
-                const config = await response.json();
-                if (config.success && config.api_id) {
-                    document.getElementById('importApiId').value = config.api_id;
-                }
-                if (config.success && config.api_hash) {
-                    document.getElementById('importApiHash').value = config.api_hash;
-                }
-            }
-        } catch (error) {
-            console.error('Failed to load defaults:', error);
-        }
     }
 
     function hideImportSessionModal() {
@@ -1144,17 +1138,12 @@
 
     async function submitImportSession() {
         const fileInput = document.getElementById('sessionFile');
-        const phone = document.getElementById('importPhone').value;
-        const apiId = document.getElementById('importApiId').value;
-        const apiHash = document.getElementById('importApiHash').value;
+        const phone = document.getElementById('importPhone').value.trim();
+        const apiId = document.getElementById('importApiId').value.trim();
+        const apiHash = document.getElementById('importApiHash').value.trim();
 
         if (!fileInput.files[0]) {
             showNotification('请选择 session 文件', 'error');
-            return;
-        }
-
-        if (!phone || !apiId || !apiHash) {
-            showNotification('请填写所有必填项', 'error');
             return;
         }
 
@@ -1165,6 +1154,7 @@
         try {
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
+            // 留空的字段交给后端从 session 和 .env 推导
             formData.append('phone', phone);
             formData.append('api_id', apiId);
             formData.append('api_hash', apiHash);

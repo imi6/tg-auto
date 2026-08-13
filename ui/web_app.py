@@ -5,6 +5,7 @@ Web应用主文件
 
 import asyncio
 import json
+import re
 import secrets
 import pytz
 from typing import Dict, List, Any, Optional
@@ -22,10 +23,12 @@ from pydantic import BaseModel
 
 from core import AccountManager, MonitorEngine
 from core.account_manager import AccountFactory
+from core.join_task_manager import JoinTaskManager
 from models import Account, AccountConfig
 from models.config import KeywordConfig, FileConfig, AIMonitorConfig, MatchType, ScheduledMessageConfig
 from monitors import monitor_factory, AIMonitorBuilder
 from services import AIService
+from services.group_service import GroupService
 from utils.logger import get_logger
 from .status_monitor import StatusMonitor
 from .config_wizard import ConfigWizard
@@ -87,10 +90,11 @@ class AddAccountRequest(BaseModel):
 
 
 class ImportSessionRequest(BaseModel):
-    phone: str
-    api_id: int
-    api_hash: str
     session_file_name: str  # 上传的 session 文件名
+    # 以下三项留空时自动从 session 文件和 .env 默认配置推导
+    phone: Optional[str] = None
+    api_id: Optional[int] = None
+    api_hash: Optional[str] = None
     proxy_type: Optional[str] = None
     proxy_host: Optional[str] = None
     proxy_port: Optional[int] = None
@@ -108,6 +112,22 @@ class PasswordRequest(BaseModel):
     password: str
 
 
+class GroupSearchRequest(BaseModel):
+    account_id: str
+    keyword: str
+    limit: int = 50
+    group_type: str = "all"  # all / group / channel
+
+
+class BatchJoinRequest(BaseModel):
+    account_ids: List[str]
+    targets: List[str]
+    delay_min: int = 30
+    delay_max: int = 60
+    max_per_account: int = 20
+    max_flood_wait: int = 600
+
+
 class WebApp:
     
     def __init__(self):
@@ -123,6 +143,8 @@ class WebApp:
         self.monitor_engine = MonitorEngine()
         self.status_monitor = StatusMonitor()
         self.config_wizard = ConfigWizard()
+        self.group_service = GroupService()
+        self.join_task_manager = JoinTaskManager()
         self.logger = get_logger(__name__)
         
         self.websocket_connections: List[WebSocket] = []
@@ -134,7 +156,12 @@ class WebApp:
         self.setup_static_files()
         self.setup_routes()
         
+        self.join_task_manager.add_listener(self._on_join_task_update)
+        
         self.logger.info("Web应用初始化完成")
+    
+    async def _on_join_task_update(self, task: Dict[str, Any]):
+        await self.broadcast_message({"type": "join_task_update", "data": task})
     
     def _safe_remove_websocket(self, websocket: WebSocket):
         try:
@@ -166,6 +193,68 @@ class WebApp:
             self.logger.info("✅ 已使用自定义密码")
         
         self.logger.info(f"Web认证已启用，用户名: {self.web_username}")
+    
+    def resolve_api_credentials(self, api_id: Any, api_hash: Any) -> Optional[tuple]:
+        """未显式提供 API ID / Hash 时回退到 .env 中的默认配置"""
+        raw_id = str(api_id if api_id is not None else '').strip()
+        raw_hash = str(api_hash or '').strip()
+        
+        if config:
+            if not raw_id:
+                raw_id = str(getattr(config, 'TG_API_ID', '') or '').strip()
+            if not raw_hash:
+                raw_hash = str(getattr(config, 'TG_API_HASH', '') or '').strip()
+        
+        try:
+            parsed_id = int(raw_id)
+        except (TypeError, ValueError):
+            return None
+        
+        if not parsed_id or not raw_hash:
+            return None
+        
+        return parsed_id, raw_hash
+    
+    @staticmethod
+    def resolve_session_phone(phone: Optional[str], me, filename: Optional[str] = None) -> str:
+        """确定 session 对应的账号标识
+
+        优先使用用户填写的手机号，其次取 session 中登录用户自带的手机号，
+        再退化到文件名，最后用用户名或用户 ID 兜底。
+        """
+        provided = (phone or '').strip()
+        if provided:
+            return f"+{provided.lstrip('+')}"
+        
+        me_phone = str(getattr(me, 'phone', '') or '').strip()
+        if me_phone:
+            return f"+{me_phone.lstrip('+')}"
+        
+        stem = Path(filename or '').stem.strip()
+        if re.fullmatch(r'\+?\d{6,15}', stem):
+            return f"+{stem.lstrip('+')}"
+        
+        username = getattr(me, 'username', None)
+        if username:
+            return f"@{username}"
+        
+        return f"user_{getattr(me, 'id', 'unknown')}"
+    
+    @staticmethod
+    def _cleanup_session_file(session_path: Path):
+        for path in (session_path, session_path.with_name(f"{session_path.name}-journal")):
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+    
+    def _replace_session_file(self, source: Path, target: Path):
+        if source.resolve() == target.resolve():
+            return
+        
+        self._cleanup_session_file(target)
+        source.replace(target)
     
     def get_current_user(self, request: Request):
         user = request.session.get("user")
@@ -311,6 +400,11 @@ class WebApp:
         async def channels_page(request: Request):
             user = self.get_current_user(request)
             return self.templates.TemplateResponse(request, "channels.html",{"user": user})
+        
+        @self.app.get("/groups", response_class=HTMLResponse)
+        async def groups_page(request: Request):
+            user = self.get_current_user(request)
+            return self.templates.TemplateResponse("groups.html", {"request": request, "user": user})
         
         @self.app.get("/config-export", response_class=HTMLResponse)
         async def config_export_page(request: Request):
@@ -548,77 +642,115 @@ class WebApp:
                 return {"success": False, "message": f"添加账号失败: {str(e)}"}
 
         @self.app.post("/api/accounts/upload-session")
-        async def upload_session(request: Request, file: UploadFile = Form(...), phone: str = Form(...),
-                                 api_id: int = Form(...), api_hash: str = Form(...)):
-            """上传并导入 .session 文件"""
+        async def upload_session(request: Request, file: UploadFile = Form(...), phone: str = Form(""),
+                                 api_id: str = Form(""), api_hash: str = Form("")):
+            """上传并导入 .session 文件
+
+            手机号、API ID、API Hash 均为选填：
+            手机号从 session 登录用户信息中读取，API 凭据回退到 .env 默认配置。
+            """
             user = self.get_current_user(request)
+            
+            credentials = self.resolve_api_credentials(api_id, api_hash)
+            if not credentials:
+                return {
+                    "success": False,
+                    "message": "缺少 API ID / API Hash，请在表单中填写，或在 .env 中配置 TG_API_ID 和 TG_API_HASH"
+                }
+            resolved_api_id, resolved_api_hash = credentials
+            
+            sessions_dir = Path("sessions")
+            sessions_dir.mkdir(exist_ok=True)
+            
+            # 先落到临时文件，确认 session 有效并拿到手机号后再改名
+            temp_path = sessions_dir / f"_importing_{secrets.token_hex(6)}.session"
+            client = None
+            
             try:
-                # 创建 sessions 目录
-                sessions_dir = Path("sessions")
-                sessions_dir.mkdir(exist_ok=True)
-
-                # 保存上传的 session 文件
-                session_name = phone.replace("+", "")
-                session_path = sessions_dir / f"{session_name}.session"
-
-                # 读取上传的文件内容
                 content = await file.read()
-                with open(session_path, 'wb') as f:
-                    f.write(content)
-
-                self.logger.info(f"Session 文件已保存: {session_path}")
-
-                # 创建账号配置
+                temp_path.write_bytes(content)
+                
+                from telethon import TelegramClient
+                client = TelegramClient(str(temp_path.with_suffix('')), resolved_api_id, resolved_api_hash)
+                await client.connect()
+                
+                if not await client.is_user_authorized():
+                    return {"success": False, "message": "Session 文件无效或已过期，请重新登录"}
+                
+                me = await client.get_me()
+                account_id = self.resolve_session_phone(phone, me, file.filename)
+                
+                if self.account_manager.get_account(account_id):
+                    return {"success": False, "message": f"账号 {account_id} 已存在，请勿重复导入"}
+                
+                # Windows 下 sqlite 文件被占用时无法改名，需先断开
+                await client.disconnect()
+                client = None
+                
+                session_path = sessions_dir / f"{account_id.lstrip('+@')}.session"
+                self._replace_session_file(temp_path, session_path)
+                temp_path = None
+                
                 account_config = AccountFactory.create_account_config(
-                    phone=phone,
-                    api_id=api_id,
-                    api_hash=api_hash,
+                    phone=account_id,
+                    api_id=resolved_api_id,
+                    api_hash=resolved_api_hash,
                     proxy_config=None
                 )
-
-                # 使用上传的 session 文件
-                from telethon import TelegramClient
+                # 记录实际路径，否则重启后会去项目根目录找不到该 session
+                account_config.session_name = str(session_path.with_suffix(''))
+                
                 client = TelegramClient(
-                    str(session_path.with_suffix('')),  # 不带 .session 后缀
+                    account_config.session_name,
                     account_config.api_id,
                     account_config.api_hash
                 )
-
                 await client.connect()
-
-                # 检查 session 是否有效
-                if not await client.is_user_authorized():
-                    await client.disconnect()
-                    session_path.unlink()  # 删除无效的 session 文件
-                    return {"success": False, "message": "Session 文件无效或已过期，请重新登录"}
-
-                # 获取用户信息
-                me = await client.get_me()
-
-                # 创建账号
+                
                 account = Account(
-                    account_id=phone,
+                    account_id=account_id,
                     config=account_config,
                     client=client,
                     own_user_id=me.id,
                     monitor_active=True
                 )
-
+                
                 self.account_manager.add_account(account)
                 await self.broadcast_status_update()
-
-                self.logger.info(f"通过 Session 文件成功添加账号: {phone}, 用户ID: {me.id}")
-                return {"success": True, "message": f"账号导入成功！用户: {me.first_name or phone}"}
-
+                
+                self.logger.info(f"通过 Session 文件成功添加账号: {account_id}, 用户ID: {me.id}")
+                return {
+                    "success": True,
+                    "account_id": account_id,
+                    "message": f"账号导入成功！用户: {me.first_name or account_id}"
+                }
+                
             except Exception as e:
                 self.logger.error(f"导入 Session 文件失败: {e}")
                 return {"success": False, "message": f"导入失败: {str(e)}"}
+            finally:
+                # temp_path 仅在成功改名后被置空，非空说明导入未完成，需要清理
+                if temp_path:
+                    if client:
+                        try:
+                            await client.disconnect()
+                        except Exception:
+                            pass
+                    self._cleanup_session_file(temp_path)
 
         @self.app.post("/api/accounts/import-session")
         async def import_session(request: Request, import_req: ImportSessionRequest):
-            """通过已上传的 session 文件导入账号"""
+            """通过已上传的 session 文件导入账号（手机号与 API 凭据均可留空）"""
             user = self.get_current_user(request)
             try:
+                credentials = self.resolve_api_credentials(import_req.api_id, import_req.api_hash)
+                if not credentials:
+                    return {
+                        "success": False,
+                        "message": "缺少 API ID / API Hash，请在请求中提供，或在 .env 中配置 TG_API_ID 和 TG_API_HASH"
+                    }
+                resolved_api_id, resolved_api_hash = credentials
+                
                 proxy_config = None
                 if import_req.proxy_type and import_req.proxy_host and import_req.proxy_port:
                     proxy_config = {
@@ -628,49 +760,64 @@ class WebApp:
                         'username': import_req.proxy_username,
                         'password': import_req.proxy_password
                     }
-
-                account_config = AccountFactory.create_account_config(
-                    phone=import_req.phone,
-                    api_id=import_req.api_id,
-                    api_hash=import_req.api_hash,
-                    proxy_config=proxy_config
-                )
-
+                
                 # session 文件路径
                 sessions_dir = Path("sessions")
                 session_path = sessions_dir / import_req.session_file_name
-
+                
                 if not session_path.exists():
                     return {"success": False, "message": f"Session 文件不存在: {import_req.session_file_name}"}
-
+                
+                account_config = AccountFactory.create_account_config(
+                    phone=(import_req.phone or '').strip(),
+                    api_id=resolved_api_id,
+                    api_hash=resolved_api_hash,
+                    proxy_config=proxy_config
+                )
+                # 记录实际路径，否则重启后会去项目根目录找不到该 session
+                account_config.session_name = str(session_path.with_suffix(''))
+                
                 from telethon import TelegramClient
                 client = TelegramClient(
-                    str(session_path.with_suffix('')),
+                    account_config.session_name,
                     account_config.api_id,
                     account_config.api_hash,
                     proxy=account_config.proxy
                 )
-
+                
                 await client.connect()
-
+                
                 if not await client.is_user_authorized():
                     await client.disconnect()
                     return {"success": False, "message": "Session 已过期，请重新上传有效的 session 文件"}
-
+                
                 me = await client.get_me()
+                account_id = self.resolve_session_phone(import_req.phone, me, import_req.session_file_name)
+                
+                if self.account_manager.get_account(account_id):
+                    await client.disconnect()
+                    return {"success": False, "message": f"账号 {account_id} 已存在，请勿重复导入"}
+                
+                account_config.phone = account_id
+                
                 account = Account(
-                    account_id=import_req.phone,
+                    account_id=account_id,
                     config=account_config,
                     client=client,
                     own_user_id=me.id,
                     monitor_active=True
                 )
-
+                
                 self.account_manager.add_account(account)
                 await self.broadcast_status_update()
-
-                return {"success": True, "message": f"账号导入成功！用户: {me.first_name or import_req.phone}"}
-
+                
+                self.logger.info(f"通过已上传的 Session 成功添加账号: {account_id}, 用户ID: {me.id}")
+                return {
+                    "success": True,
+                    "account_id": account_id,
+                    "message": f"账号导入成功！用户: {me.first_name or account_id}"
+                }
+                
             except Exception as e:
                 self.logger.error(f"导入账号失败: {e}")
                 return {"success": False, "message": f"导入失败: {str(e)}"}
@@ -1348,6 +1495,130 @@ class WebApp:
             except Exception as e:
                 self.logger.error(f"导出频道列表失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/groups/search")
+        async def search_groups(request: Request, search_request: GroupSearchRequest):
+            user = self.get_current_user(request)
+            
+            keyword = search_request.keyword.strip()
+            if not keyword:
+                return {"success": False, "message": "请输入搜索关键词", "groups": []}
+            
+            account = self.account_manager.get_account(search_request.account_id)
+            if not account:
+                raise HTTPException(status_code=404, detail="账号不存在")
+            
+            try:
+                if not account.client:
+                    await self.account_manager.connect_account(search_request.account_id)
+                    account = self.account_manager.get_account(search_request.account_id)
+                
+                if not account or not account.client:
+                    return {"success": False, "message": "账号未登录，无法搜索", "groups": []}
+                
+                if not account.client.is_connected():
+                    await account.client.connect()
+                
+                groups = await self.group_service.search(
+                    account.client,
+                    keyword,
+                    limit=min(max(search_request.limit, 1), 100),
+                    group_type=search_request.group_type
+                )
+                
+                self.logger.info(f"账号 {search_request.account_id} 搜索 '{keyword}' 得到 {len(groups)} 个结果")
+                
+                return {"success": True, "groups": groups, "total": len(groups)}
+                
+            except Exception as e:
+                self.logger.error(f"搜索群组失败: {e}")
+                return {"success": False, "message": str(e), "groups": []}
+        
+        @self.app.post("/api/groups/parse-targets")
+        async def parse_join_targets(request: Request, data: Dict[str, Any]):
+            user = self.get_current_user(request)
+            
+            raw_targets = data.get("targets", [])
+            if isinstance(raw_targets, str):
+                raw_targets = [raw_targets]
+            
+            parsed = self.group_service.parse_targets(raw_targets)
+            return {
+                "success": True,
+                "targets": parsed["targets"],
+                "invalid": parsed["invalid"]
+            }
+        
+        @self.app.post("/api/groups/join-tasks")
+        async def create_join_task(request: Request, join_request: BatchJoinRequest):
+            user = self.get_current_user(request)
+            
+            if not join_request.account_ids:
+                return {"success": False, "message": "请至少选择一个账号"}
+            
+            missing = [
+                account_id for account_id in join_request.account_ids
+                if not self.account_manager.get_account(account_id)
+            ]
+            if missing:
+                return {"success": False, "message": f"账号不存在: {', '.join(missing)}"}
+            
+            parsed = self.group_service.parse_targets(join_request.targets)
+            if not parsed["targets"]:
+                return {"success": False, "message": "没有可用的入群目标，请检查输入的群组链接"}
+            
+            task = self.join_task_manager.create_task(
+                account_ids=join_request.account_ids,
+                targets=parsed["targets"],
+                options={
+                    "delay_min": join_request.delay_min,
+                    "delay_max": join_request.delay_max,
+                    "max_per_account": join_request.max_per_account,
+                    "max_flood_wait": join_request.max_flood_wait,
+                }
+            )
+            
+            return {
+                "success": True,
+                "task": task,
+                "invalid": parsed["invalid"],
+                "message": f"任务已启动：{len(join_request.account_ids)} 个账号 x {len(task['targets'])} 个群组"
+            }
+        
+        @self.app.get("/api/groups/join-tasks")
+        async def list_join_tasks(request: Request, limit: int = 20):
+            user = self.get_current_user(request)
+            return {"success": True, "tasks": self.join_task_manager.list_tasks(limit)}
+        
+        @self.app.get("/api/groups/join-tasks/{task_id}")
+        async def get_join_task(request: Request, task_id: str):
+            user = self.get_current_user(request)
+            task = self.join_task_manager.get_task(task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail="任务不存在")
+            return {"success": True, "task": task}
+        
+        @self.app.post("/api/groups/join-tasks/{task_id}/cancel")
+        async def cancel_join_task(request: Request, task_id: str):
+            user = self.get_current_user(request)
+            if not self.join_task_manager.get_task(task_id):
+                raise HTTPException(status_code=404, detail="任务不存在")
+            
+            if not self.join_task_manager.cancel_task(task_id):
+                return {"success": False, "message": "任务已结束，无需取消"}
+            
+            return {"success": True, "message": "已请求取消，正在等待当前操作结束"}
+        
+        @self.app.delete("/api/groups/join-tasks/{task_id}")
+        async def delete_join_task(request: Request, task_id: str):
+            user = self.get_current_user(request)
+            if not self.join_task_manager.get_task(task_id):
+                raise HTTPException(status_code=404, detail="任务不存在")
+            
+            if not self.join_task_manager.delete_task(task_id):
+                return {"success": False, "message": "任务运行中，请先取消"}
+            
+            return {"success": True, "message": "任务记录已删除"}
         
         @self.app.post("/api/scheduled-messages")
         async def create_scheduled_message(request: Request, message: Dict[str, Any]):
@@ -2400,10 +2671,14 @@ class WebApp:
             return
 
         stats = await self.get_system_stats()
-        message = {
+        await self.broadcast_message({
             "type": "stats_update",
             "data": stats.dict()
-        }
+        })
+    
+    async def broadcast_message(self, message: Dict[str, Any]):
+        if not self.websocket_connections:
+            return
 
         connections_copy = list(self.websocket_connections)
         disconnected = []

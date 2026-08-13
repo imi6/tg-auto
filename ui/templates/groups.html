@@ -1,0 +1,1147 @@
+{% extends "base.html" %}
+
+{% block title %}群组管理 - TG监控系统{% endblock %}
+
+{% block page_title %}群组管理{% endblock %}
+{% block page_subtitle %}搜索公开群组并为多个账号批量入群{% endblock %}
+
+{% block extra_css %}
+<style>
+    .gm-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+    }
+
+    .gm-header h2 {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+
+    .gm-tabs {
+        display: flex;
+        gap: 4px;
+        border-bottom: 1px solid var(--border-color);
+        margin-bottom: 20px;
+        overflow-x: auto;
+    }
+
+    .gm-tab {
+        padding: 10px 18px;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: all 0.2s ease;
+    }
+
+    .gm-tab:hover {
+        color: var(--text-primary);
+    }
+
+    .gm-tab.active {
+        color: var(--primary-color);
+        border-bottom-color: var(--primary-color);
+    }
+
+    .gm-panel {
+        display: none;
+    }
+
+    .gm-panel.active {
+        display: block;
+    }
+
+    .gm-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+
+    .gm-toolbar {
+        display: flex;
+        gap: 12px;
+        align-items: flex-end;
+        flex-wrap: wrap;
+    }
+
+    .gm-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .gm-field.grow {
+        flex: 1;
+        min-width: 220px;
+    }
+
+    .gm-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .gm-input,
+    .gm-select {
+        height: 42px;
+        padding: 0 14px;
+        font-size: 14px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        color: var(--text-primary);
+        transition: border-color 0.2s ease;
+    }
+
+    .gm-textarea {
+        min-height: 140px;
+        padding: 12px 14px;
+        font-size: 13px;
+        line-height: 1.6;
+        font-family: 'SFMono-Regular', Consolas, monospace;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        color: var(--text-primary);
+        resize: vertical;
+    }
+
+    .gm-input:focus,
+    .gm-select:focus,
+    .gm-textarea:focus {
+        outline: none;
+        border-color: var(--primary-color);
+    }
+
+    .gm-hint {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-top: 6px;
+        line-height: 1.6;
+    }
+
+    .gm-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+    }
+
+    .gm-table th {
+        text-align: left;
+        padding: 12px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        border-bottom: 1px solid var(--border-color);
+        white-space: nowrap;
+    }
+
+    .gm-table td {
+        padding: 12px;
+        border-bottom: 1px solid var(--border-color);
+        color: var(--text-primary);
+        vertical-align: middle;
+    }
+
+    .gm-table tbody tr:hover {
+        background: var(--bg-tertiary);
+    }
+
+    .gm-table .col-check {
+        width: 40px;
+    }
+
+    .gm-title-cell {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .gm-title-cell .sub {
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+
+    .gm-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .gm-tag.group {
+        background: rgba(91, 95, 222, 0.15);
+        color: var(--primary-color);
+    }
+
+    .gm-tag.channel {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--warning-color);
+    }
+
+    .gm-tag.success {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success-color);
+    }
+
+    .gm-tag.already {
+        background: rgba(107, 107, 139, 0.2);
+        color: var(--text-secondary);
+    }
+
+    .gm-tag.pending {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--warning-color);
+    }
+
+    .gm-tag.failed {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--danger-color);
+    }
+
+    .gm-selection-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 20px;
+        margin-top: 16px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        flex-wrap: wrap;
+    }
+
+    .gm-empty {
+        padding: 48px 20px;
+        text-align: center;
+        color: var(--text-muted);
+    }
+
+    .gm-empty i {
+        font-size: 40px;
+        display: block;
+        margin-bottom: 12px;
+        opacity: 0.5;
+    }
+
+    .gm-account-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 10px;
+        max-height: 220px;
+        overflow-y: auto;
+    }
+
+    .gm-account-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        transition: border-color 0.2s ease;
+    }
+
+    .gm-account-item:hover {
+        border-color: var(--primary-color);
+    }
+
+    .gm-account-item .meta {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    .gm-account-item .meta .phone {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .gm-account-item .meta .state {
+        font-size: 11px;
+        color: var(--text-muted);
+    }
+
+    .gm-modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+        padding: 20px;
+    }
+
+    .gm-modal.open {
+        display: flex;
+    }
+
+    .gm-modal-content {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        width: 100%;
+        max-width: 720px;
+        max-height: 90vh;
+        overflow-y: auto;
+        box-shadow: var(--shadow-lg);
+    }
+
+    .gm-modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 24px;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .gm-modal-header h3 {
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+
+    .gm-modal-body {
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+    }
+
+    .gm-modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        padding: 18px 24px;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .gm-grid-3 {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 14px;
+    }
+
+    .gm-task {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 20px;
+        margin-bottom: 16px;
+    }
+
+    .gm-task-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+    }
+
+    .gm-task-id {
+        font-size: 13px;
+        font-family: 'SFMono-Regular', Consolas, monospace;
+        color: var(--text-secondary);
+    }
+
+    .gm-progress {
+        height: 8px;
+        background: var(--bg-tertiary);
+        border-radius: 999px;
+        overflow: hidden;
+        margin-bottom: 12px;
+    }
+
+    .gm-progress-bar {
+        height: 100%;
+        background: var(--primary-gradient);
+        transition: width 0.3s ease;
+    }
+
+    .gm-task-stats {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin-bottom: 14px;
+    }
+
+    .gm-task-account {
+        border-top: 1px solid var(--border-color);
+        padding-top: 12px;
+        margin-top: 12px;
+    }
+
+    .gm-task-account-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+    }
+
+    .gm-item-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 6px 0;
+        font-size: 12px;
+        color: var(--text-secondary);
+        border-bottom: 1px dashed var(--border-color);
+    }
+
+    .gm-item-line:last-child {
+        border-bottom: none;
+    }
+
+    .gm-item-line .target {
+        font-family: 'SFMono-Regular', Consolas, monospace;
+        color: var(--text-primary);
+        word-break: break-all;
+    }
+
+    .gm-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--border-color);
+        border-top-color: var(--primary-color);
+        border-radius: 50%;
+        animation: gm-spin 0.8s linear infinite;
+    }
+
+    @keyframes gm-spin {
+        to { transform: rotate(360deg); }
+    }
+
+    @media (max-width: 768px) {
+        .gm-table th:nth-child(4),
+        .gm-table td:nth-child(4) {
+            display: none;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="gm-header">
+    <h2>群组管理</h2>
+    <button class="btn btn-primary" onclick="openJoinModal()">
+        <i class="bi bi-people-fill"></i>
+        批量入群
+    </button>
+</div>
+
+<div class="gm-tabs">
+    <button class="gm-tab active" data-tab="search" onclick="switchTab('search')">搜索群组</button>
+    <button class="gm-tab" data-tab="joined" onclick="switchTab('joined')">已加入的群</button>
+    <button class="gm-tab" data-tab="tasks" onclick="switchTab('tasks')">入群任务 <span id="runningBadge"></span></button>
+</div>
+
+<!-- 搜索群组 -->
+<div class="gm-panel active" id="panel-search">
+    <div class="gm-card">
+        <div class="gm-toolbar">
+            <div class="gm-field">
+                <label class="gm-label" for="searchAccount">搜索账号</label>
+                <select class="gm-select" id="searchAccount" style="min-width: 200px;"></select>
+            </div>
+            <div class="gm-field grow">
+                <label class="gm-label" for="searchKeyword">关键词 / 链接</label>
+                <input class="gm-input" id="searchKeyword" placeholder="输入关键词，或直接粘贴 @用户名 / t.me 链接"
+                       onkeydown="if(event.key==='Enter') doSearch()">
+            </div>
+            <div class="gm-field">
+                <label class="gm-label" for="searchType">类型</label>
+                <select class="gm-select" id="searchType">
+                    <option value="all">全部</option>
+                    <option value="group">仅群组</option>
+                    <option value="channel">仅频道</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" style="height: 42px;" id="searchBtn" onclick="doSearch()">
+                <i class="bi bi-search"></i>
+                搜索
+            </button>
+        </div>
+        <div class="gm-hint">
+            Telegram 全局搜索仅覆盖公开群组和频道，单次返回条数有限。私有群请在「批量入群」中直接粘贴邀请链接。
+        </div>
+    </div>
+
+    <div class="gm-card" style="padding: 0; overflow: hidden;">
+        <div id="searchResults">
+            <div class="gm-empty">
+                <i class="bi bi-search"></i>
+                输入关键词开始搜索公开群组
+            </div>
+        </div>
+    </div>
+
+    <div class="gm-selection-bar" id="searchSelectionBar" style="display: none;">
+        <span>已选中 <strong id="selectedCount">0</strong> 个群组</span>
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-secondary" onclick="clearSelection()">清空选择</button>
+            <button class="btn btn-primary" onclick="openJoinModal(true)">
+                <i class="bi bi-box-arrow-in-right"></i>
+                批量加入所选
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- 已加入的群 -->
+<div class="gm-panel" id="panel-joined">
+    <div class="gm-card">
+        <div class="gm-toolbar">
+            <div class="gm-field">
+                <label class="gm-label" for="joinedAccount">账号</label>
+                <select class="gm-select" id="joinedAccount" style="min-width: 200px;"></select>
+            </div>
+            <div class="gm-field grow">
+                <label class="gm-label" for="joinedKeyword">筛选</label>
+                <input class="gm-input" id="joinedKeyword" placeholder="按名称筛选" oninput="renderJoined()">
+            </div>
+            <div class="gm-field">
+                <label class="gm-label" for="joinedType">类型</label>
+                <select class="gm-select" id="joinedType" onchange="renderJoined()">
+                    <option value="all">群组和频道</option>
+                    <option value="group">仅群组</option>
+                    <option value="channel">仅频道</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" style="height: 42px;" id="joinedBtn" onclick="loadJoined()">
+                <i class="bi bi-arrow-clockwise"></i>
+                加载
+            </button>
+        </div>
+    </div>
+
+    <div class="gm-card" style="padding: 0; overflow: hidden;">
+        <div id="joinedResults">
+            <div class="gm-empty">
+                <i class="bi bi-collection"></i>
+                选择账号后点击「加载」查看已加入的群组
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 入群任务 -->
+<div class="gm-panel" id="panel-tasks">
+    <div id="taskList">
+        <div class="gm-empty">
+            <i class="bi bi-list-task"></i>
+            暂无入群任务
+        </div>
+    </div>
+</div>
+
+<!-- 批量入群弹窗 -->
+<div class="gm-modal" id="joinModal">
+    <div class="gm-modal-content">
+        <div class="gm-modal-header">
+            <h3>批量入群</h3>
+            <button class="btn-close" onclick="closeJoinModal()"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="gm-modal-body">
+            <div class="gm-field">
+                <label class="gm-label">执行账号</label>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <button class="btn btn-secondary btn-sm" onclick="toggleAllAccounts(true)">全选</button>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleAllAccounts(false)">全不选</button>
+                </div>
+                <div class="gm-account-list" id="joinAccountList"></div>
+            </div>
+
+            <div class="gm-field">
+                <label class="gm-label" for="joinTargets">入群目标（每行一个）</label>
+                <textarea class="gm-textarea" id="joinTargets"
+                          placeholder="@example_group&#10;https://t.me/example_channel&#10;https://t.me/+AbCdEfGhIjK"></textarea>
+                <div class="gm-hint">支持 @用户名、t.me 链接、私有群邀请链接（t.me/+xxx 或 joinchat/xxx）以及群组 ID。</div>
+            </div>
+
+            <div class="gm-grid-3">
+                <div class="gm-field">
+                    <label class="gm-label" for="delayMin">最小间隔（秒）</label>
+                    <input class="gm-input" type="number" id="delayMin" value="30" min="5">
+                </div>
+                <div class="gm-field">
+                    <label class="gm-label" for="delayMax">最大间隔（秒）</label>
+                    <input class="gm-input" type="number" id="delayMax" value="60" min="5">
+                </div>
+                <div class="gm-field">
+                    <label class="gm-label" for="maxPerAccount">每账号上限</label>
+                    <input class="gm-input" type="number" id="maxPerAccount" value="20" min="1">
+                </div>
+            </div>
+            <div class="gm-hint">
+                同一账号内串行加群并按上述区间随机延迟，多个账号之间并行执行。间隔过短会显著提高触发风控的概率，建议不低于 30 秒。
+            </div>
+        </div>
+        <div class="gm-modal-footer">
+            <button class="btn btn-secondary" onclick="closeJoinModal()">取消</button>
+            <button class="btn btn-primary" id="startJoinBtn" onclick="submitJoinTask()">
+                <i class="bi bi-play-fill"></i>
+                开始执行
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let accounts = [];
+    let searchResults = [];
+    let selectedTargets = new Map();
+    let joinedDialogs = [];
+    let tasks = [];
+    let currentTab = 'search';
+
+    const STATUS_TEXT = {
+        success: '加入成功',
+        already: '已在群内',
+        pending: '待批准',
+        failed: '失败'
+    };
+
+    const ACCOUNT_STATE_TEXT = {
+        pending: '等待中',
+        running: '执行中',
+        completed: '已完成',
+        cancelled: '已取消',
+        aborted: '已中止',
+        failed: '失败',
+        interrupted: '已中断'
+    };
+
+    const TASK_STATE_TEXT = {
+        running: '执行中',
+        completed: '已完成',
+        cancelled: '已取消',
+        interrupted: '已中断'
+    };
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text == null ? '' : String(text);
+        return div.innerHTML;
+    }
+
+    function switchTab(tab) {
+        currentTab = tab;
+        document.querySelectorAll('.gm-tab').forEach(el => {
+            el.classList.toggle('active', el.dataset.tab === tab);
+        });
+        document.querySelectorAll('.gm-panel').forEach(el => {
+            el.classList.toggle('active', el.id === `panel-${tab}`);
+        });
+
+        if (tab === 'tasks') {
+            loadTasks();
+        }
+    }
+
+    async function loadAccounts() {
+        try {
+            const response = await fetch('/api/accounts');
+            const data = await response.json();
+            accounts = data.accounts || [];
+        } catch (error) {
+            console.error('加载账号失败:', error);
+            showNotification('加载账号列表失败', 'error');
+            accounts = [];
+        }
+
+        const options = accounts.length
+            ? accounts.map(a => `<option value="${escapeHtml(a.account_id)}">${escapeHtml(a.phone)}${a.name ? ' - ' + escapeHtml(a.name) : ''}</option>`).join('')
+            : '<option value="">暂无可用账号</option>';
+
+        document.getElementById('searchAccount').innerHTML = options;
+        document.getElementById('joinedAccount').innerHTML = options;
+
+        document.getElementById('joinAccountList').innerHTML = accounts.length
+            ? accounts.map(a => `
+                <label class="gm-account-item">
+                    <input type="checkbox" class="join-account-check" value="${escapeHtml(a.account_id)}" ${a.is_valid ? 'checked' : ''}>
+                    <span class="meta">
+                        <span class="phone">${escapeHtml(a.phone)}</span>
+                        <span class="state">${escapeHtml(a.status_display || '')}</span>
+                    </span>
+                </label>
+            `).join('')
+            : '<div class="gm-hint">暂无账号，请先在「账号管理」中添加</div>';
+    }
+
+    async function doSearch() {
+        const accountId = document.getElementById('searchAccount').value;
+        const keyword = document.getElementById('searchKeyword').value.trim();
+        const groupType = document.getElementById('searchType').value;
+
+        if (!accountId) {
+            showNotification('请先选择一个账号', 'warning');
+            return;
+        }
+        if (!keyword) {
+            showNotification('请输入搜索关键词', 'warning');
+            return;
+        }
+
+        const button = document.getElementById('searchBtn');
+        button.disabled = true;
+        document.getElementById('searchResults').innerHTML =
+            '<div class="gm-empty"><span class="gm-spinner"></span><div style="margin-top:12px;">正在搜索...</div></div>';
+
+        try {
+            const response = await fetch('/api/groups/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ account_id: accountId, keyword: keyword, group_type: groupType, limit: 50 })
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                showNotification(data.message || '搜索失败', 'error');
+                searchResults = [];
+            } else {
+                searchResults = data.groups || [];
+            }
+        } catch (error) {
+            console.error('搜索失败:', error);
+            showNotification('搜索请求失败', 'error');
+            searchResults = [];
+        } finally {
+            button.disabled = false;
+            renderSearchResults();
+        }
+    }
+
+    function renderSearchResults() {
+        const container = document.getElementById('searchResults');
+
+        if (!searchResults.length) {
+            container.innerHTML = '<div class="gm-empty"><i class="bi bi-inbox"></i>没有找到匹配的公开群组</div>';
+            updateSelectionBar();
+            return;
+        }
+
+        const rows = searchResults.map((group, index) => {
+            const checked = selectedTargets.has(group.join_target) ? 'checked' : '';
+            const members = group.members_count ? group.members_count.toLocaleString() : '-';
+            const link = group.link
+                ? `<a href="${escapeHtml(group.link)}" target="_blank" rel="noopener">${escapeHtml(group.link.replace('https://', ''))}</a>`
+                : '<span style="color: var(--text-muted);">私有</span>';
+
+            return `
+                <tr>
+                    <td class="col-check">
+                        <input type="checkbox" ${checked} onchange="toggleTarget(${index}, this.checked)">
+                    </td>
+                    <td>
+                        <div class="gm-title-cell">
+                            <span>${escapeHtml(group.title || '未命名')}${group.verified ? ' <i class="bi bi-patch-check-fill" style="color: var(--primary-color);"></i>' : ''}</span>
+                            ${group.description ? `<span class="sub">${escapeHtml(group.description)}</span>` : ''}
+                        </div>
+                    </td>
+                    <td><span class="gm-tag ${group.type}">${group.type === 'group' ? '群组' : '频道'}</span></td>
+                    <td>${members}</td>
+                    <td>${link}</td>
+                    <td>
+                        ${group.joined
+                            ? '<span class="gm-tag already">已加入</span>'
+                            : `<button class="btn btn-secondary btn-sm" onclick="joinSingle(${index})">加入</button>`}
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        container.innerHTML = `
+            <table class="gm-table">
+                <thead>
+                    <tr>
+                        <th class="col-check"><input type="checkbox" onchange="toggleAllTargets(this.checked)"></th>
+                        <th>名称</th>
+                        <th>类型</th>
+                        <th>成员数</th>
+                        <th>链接</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+        updateSelectionBar();
+    }
+
+    function toggleTarget(index, checked) {
+        const group = searchResults[index];
+        if (!group) return;
+
+        if (checked) {
+            selectedTargets.set(group.join_target, group.title || group.join_target);
+        } else {
+            selectedTargets.delete(group.join_target);
+        }
+        updateSelectionBar();
+    }
+
+    function toggleAllTargets(checked) {
+        searchResults.forEach((group, index) => toggleTarget(index, checked));
+        renderSearchResults();
+    }
+
+    function clearSelection() {
+        selectedTargets.clear();
+        renderSearchResults();
+    }
+
+    function updateSelectionBar() {
+        const bar = document.getElementById('searchSelectionBar');
+        document.getElementById('selectedCount').textContent = selectedTargets.size;
+        bar.style.display = selectedTargets.size ? 'flex' : 'none';
+    }
+
+    function joinSingle(index) {
+        const group = searchResults[index];
+        if (!group) return;
+
+        selectedTargets.clear();
+        selectedTargets.set(group.join_target, group.title || group.join_target);
+        renderSearchResults();
+        openJoinModal(true);
+    }
+
+    async function loadJoined() {
+        const accountId = document.getElementById('joinedAccount').value;
+        if (!accountId) {
+            showNotification('请先选择一个账号', 'warning');
+            return;
+        }
+
+        const button = document.getElementById('joinedBtn');
+        button.disabled = true;
+        document.getElementById('joinedResults').innerHTML =
+            '<div class="gm-empty"><span class="gm-spinner"></span><div style="margin-top:12px;">正在加载...</div></div>';
+
+        try {
+            const response = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/channels?fetch_all=true`);
+            const data = await response.json();
+
+            if (!data.success) {
+                showNotification(data.error || '加载失败', 'error');
+                joinedDialogs = [];
+            } else {
+                joinedDialogs = (data.channels || []).filter(c => c.type === 'group' || c.type === 'channel');
+            }
+        } catch (error) {
+            console.error('加载已加入的群失败:', error);
+            showNotification('加载请求失败', 'error');
+            joinedDialogs = [];
+        } finally {
+            button.disabled = false;
+            renderJoined();
+        }
+    }
+
+    function renderJoined() {
+        const container = document.getElementById('joinedResults');
+        const keyword = document.getElementById('joinedKeyword').value.trim().toLowerCase();
+        const type = document.getElementById('joinedType').value;
+
+        const filtered = joinedDialogs.filter(item => {
+            if (type !== 'all' && item.type !== type) return false;
+            if (keyword && !(item.name || '').toLowerCase().includes(keyword)) return false;
+            return true;
+        });
+
+        if (!filtered.length) {
+            container.innerHTML = '<div class="gm-empty"><i class="bi bi-collection"></i>没有符合条件的群组</div>';
+            return;
+        }
+
+        const rows = filtered.map(item => `
+            <tr>
+                <td><div class="gm-title-cell"><span>${escapeHtml(item.name)}</span>
+                    ${item.username ? `<span class="sub">@${escapeHtml(item.username)}</span>` : ''}</div></td>
+                <td><span class="gm-tag ${item.type}">${item.type === 'group' ? '群组' : '频道'}</span></td>
+                <td>${item.members_count ? item.members_count.toLocaleString() : '-'}</td>
+                <td style="font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px;">${escapeHtml(item.id)}</td>
+            </tr>
+        `).join('');
+
+        container.innerHTML = `
+            <table class="gm-table">
+                <thead>
+                    <tr><th>名称</th><th>类型</th><th>成员数</th><th>ID</th></tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    }
+
+    function openJoinModal(useSelection = false) {
+        if (useSelection && selectedTargets.size) {
+            document.getElementById('joinTargets').value = Array.from(selectedTargets.keys()).join('\n');
+        }
+        document.getElementById('joinModal').classList.add('open');
+    }
+
+    function closeJoinModal() {
+        document.getElementById('joinModal').classList.remove('open');
+    }
+
+    function toggleAllAccounts(checked) {
+        document.querySelectorAll('.join-account-check').forEach(el => { el.checked = checked; });
+    }
+
+    async function submitJoinTask() {
+        const accountIds = Array.from(document.querySelectorAll('.join-account-check:checked')).map(el => el.value);
+        const targets = document.getElementById('joinTargets').value
+            .split('\n')
+            .map(line => line.trim())
+            .filter(Boolean);
+
+        if (!accountIds.length) {
+            showNotification('请至少选择一个执行账号', 'warning');
+            return;
+        }
+        if (!targets.length) {
+            showNotification('请填写至少一个入群目标', 'warning');
+            return;
+        }
+
+        const delayMin = parseInt(document.getElementById('delayMin').value, 10) || 30;
+        const delayMax = parseInt(document.getElementById('delayMax').value, 10) || 60;
+
+        if (delayMax < delayMin) {
+            showNotification('最大间隔不能小于最小间隔', 'warning');
+            return;
+        }
+
+        const button = document.getElementById('startJoinBtn');
+        button.disabled = true;
+
+        try {
+            const response = await fetch('/api/groups/join-tasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    account_ids: accountIds,
+                    targets: targets,
+                    delay_min: delayMin,
+                    delay_max: delayMax,
+                    max_per_account: parseInt(document.getElementById('maxPerAccount').value, 10) || 20
+                })
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                showNotification(data.message || '任务创建失败', 'error');
+                return;
+            }
+
+            if (data.invalid && data.invalid.length) {
+                showNotification(`已忽略 ${data.invalid.length} 个无法识别的目标`, 'warning');
+            }
+            showNotification(data.message, 'success');
+
+            closeJoinModal();
+            selectedTargets.clear();
+            renderSearchResults();
+            switchTab('tasks');
+        } catch (error) {
+            console.error('创建入群任务失败:', error);
+            showNotification('任务创建请求失败', 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function loadTasks() {
+        try {
+            const response = await fetch('/api/groups/join-tasks');
+            const data = await response.json();
+            tasks = data.tasks || [];
+        } catch (error) {
+            console.error('加载任务失败:', error);
+            tasks = [];
+        }
+        renderTasks();
+    }
+
+    function renderTasks() {
+        updateRunningBadge();
+
+        const container = document.getElementById('taskList');
+        if (!tasks.length) {
+            container.innerHTML = '<div class="gm-empty"><i class="bi bi-list-task"></i>暂无入群任务</div>';
+            return;
+        }
+
+        container.innerHTML = tasks.map(renderTask).join('');
+    }
+
+    function renderTask(task) {
+        const summary = task.summary || {};
+        const total = summary.total || 0;
+        const done = summary.done || 0;
+        const percent = total ? Math.round((done / total) * 100) : 0;
+        const running = task.status === 'running';
+
+        const accountsHtml = Object.values(task.accounts || {}).map(state => {
+            const current = state.current;
+            let currentHtml = '';
+            if (running && current) {
+                currentHtml = current.waiting_seconds
+                    ? `<span style="color: var(--text-muted);">${current.flood ? '限流等待' : '等待'} ${current.waiting_seconds}s → ${escapeHtml(current.target)}</span>`
+                    : `<span style="color: var(--text-muted);"><span class="gm-spinner"></span> 正在加入 ${escapeHtml(current.target)}</span>`;
+            }
+
+            const items = (state.items || []).slice().reverse().map(item => `
+                <div class="gm-item-line">
+                    <span class="target">${escapeHtml(item.target)}${item.title ? ' · ' + escapeHtml(item.title) : ''}</span>
+                    <span class="gm-tag ${item.status}" title="${escapeHtml(item.message)}">${STATUS_TEXT[item.status] || item.status}</span>
+                </div>
+            `).join('');
+
+            return `
+                <div class="gm-task-account">
+                    <div class="gm-task-account-head">
+                        <span>${escapeHtml(state.account_id)}</span>
+                        <span style="font-weight: 500; color: var(--text-secondary);">
+                            ${currentHtml || ACCOUNT_STATE_TEXT[state.status] || state.status}
+                        </span>
+                    </div>
+                    ${items || '<div class="gm-hint">尚无记录</div>'}
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="gm-task">
+                <div class="gm-task-head">
+                    <div>
+                        <div class="gm-task-id">${escapeHtml(task.task_id)}</div>
+                        <div style="font-size: 12px; color: var(--text-muted);">
+                            创建于 ${escapeHtml((task.created_at || '').replace('T', ' ').split('.')[0])}
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="gm-tag ${running ? 'pending' : (task.status === 'completed' ? 'success' : 'already')}">
+                            ${TASK_STATE_TEXT[task.status] || task.status}
+                        </span>
+                        ${running
+                            ? `<button class="btn btn-secondary btn-sm" onclick="cancelTask('${task.task_id}')">取消</button>`
+                            : `<button class="btn btn-secondary btn-sm" onclick="deleteTask('${task.task_id}')">删除</button>`}
+                    </div>
+                </div>
+
+                <div class="gm-progress"><div class="gm-progress-bar" style="width: ${percent}%;"></div></div>
+
+                <div class="gm-task-stats">
+                    <span>进度 ${done} / ${total}</span>
+                    <span style="color: var(--success-color);">成功 ${summary.success || 0}</span>
+                    <span>已在群 ${summary.already || 0}</span>
+                    <span style="color: var(--warning-color);">待批准 ${summary.pending || 0}</span>
+                    <span style="color: var(--danger-color);">失败 ${summary.failed || 0}</span>
+                </div>
+
+                ${accountsHtml}
+            </div>
+        `;
+    }
+
+    function updateRunningBadge() {
+        const runningCount = tasks.filter(t => t.status === 'running').length;
+        const badge = document.getElementById('runningBadge');
+        badge.innerHTML = runningCount
+            ? `<span class="gm-tag pending" style="margin-left: 4px;">${runningCount}</span>`
+            : '';
+    }
+
+    async function cancelTask(taskId) {
+        try {
+            const response = await fetch(`/api/groups/join-tasks/${taskId}/cancel`, { method: 'POST' });
+            const data = await response.json();
+            showNotification(data.message, data.success ? 'success' : 'warning');
+        } catch (error) {
+            console.error('取消任务失败:', error);
+            showNotification('取消任务失败', 'error');
+        }
+    }
+
+    async function deleteTask(taskId) {
+        if (!confirm('确定删除该任务记录吗？')) return;
+
+        try {
+            const response = await fetch(`/api/groups/join-tasks/${taskId}`, { method: 'DELETE' });
+            const data = await response.json();
+            if (data.success) {
+                tasks = tasks.filter(t => t.task_id !== taskId);
+                renderTasks();
+            }
+            showNotification(data.message, data.success ? 'success' : 'warning');
+        } catch (error) {
+            console.error('删除任务失败:', error);
+            showNotification('删除任务失败', 'error');
+        }
+    }
+
+    // 由 base.html 的 WebSocket 消息分发调用
+    window.handleJoinTaskUpdate = function (task) {
+        const index = tasks.findIndex(t => t.task_id === task.task_id);
+        if (index >= 0) {
+            tasks[index] = task;
+        } else {
+            tasks.unshift(task);
+        }
+
+        if (currentTab === 'tasks') {
+            renderTasks();
+        } else {
+            updateRunningBadge();
+        }
+    };
+
+    document.getElementById('joinModal').addEventListener('click', function (event) {
+        if (event.target === this) closeJoinModal();
+    });
+
+    (async function init() {
+        await loadAccounts();
+        await loadTasks();
+    })();
+</script>
+{% endblock %}

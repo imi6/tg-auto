@@ -1227,6 +1227,13 @@
                         <span class="nav-text">频道列表</span>
                     </a>
                 </div>
+
+                <div class="nav-item">
+                    <a href="/groups" class="nav-link {% if '/groups' in request.url.path %}active{% endif %}">
+                        <i class="bi bi-people-fill nav-icon"></i>
+                        <span class="nav-text">群组管理</span>
+                    </a>
+                </div>
                 
                 <div class="nav-item">
                     <a href="/config-export" class="nav-link {% if '/config-export' in request.url.path %}active{% endif %}">
@@ -1367,8 +1374,12 @@
                 console.log('监控事件:', data.data);
             } else if (data.type === 'account_status') {
                 console.log('账号状态:', data.data);
+            } else if (data.type === 'join_task_update') {
+                if (typeof window.handleJoinTaskUpdate === 'function') {
+                    window.handleJoinTaskUpdate(data.data);
+                }
             }
-            
+
         }
         
         function updateSystemStats(stats) {

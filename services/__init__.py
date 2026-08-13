@@ -5,8 +5,10 @@
 
 from .ai_service import AIService
 from .enhanced_forward_service import EnhancedForwardService
+from .group_service import GroupService
 
 __all__ = [
     'AIService',
-    'EnhancedForwardService'
+    'EnhancedForwardService',
+    'GroupService'
 ] 
