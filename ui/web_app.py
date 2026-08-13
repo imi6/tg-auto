@@ -26,6 +26,7 @@ from core.account_manager import AccountFactory
 from core.join_task_manager import JoinTaskManager
 from core.profile_task_manager import ProfileTaskManager
 from core.proxy_manager import ProxyManager
+from core.send_record_store import SendRecordStore
 from utils.session_meta import parse_session_metadata
 from models import Account, AccountConfig
 from models.config import KeywordConfig, FileConfig, AIMonitorConfig, MatchType, ScheduledMessageConfig
@@ -2150,6 +2151,24 @@ class WebApp:
             except Exception as e:
                 self.logger.error(f"获取定时消息失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/scheduled-messages/records")
+        async def list_send_records(request: Request, job_id: str = "", status: str = "", limit: int = 100):
+            user = self.get_current_user(request)
+            
+            store = SendRecordStore()
+            return {
+                "success": True,
+                "records": store.list_records(job_id=job_id or None, status=status or None, limit=limit),
+                "statistics": store.stats(job_id=job_id or None)
+            }
+        
+        @self.app.delete("/api/scheduled-messages/records")
+        async def clear_send_records(request: Request, job_id: str = ""):
+            user = self.get_current_user(request)
+            
+            removed = SendRecordStore().clear(job_id=job_id or None)
+            return {"success": True, "removed": removed, "message": f"已清理 {removed} 条发送记录"}
         
         @self.app.get("/api/cron-examples")
         async def get_cron_examples(request: Request):

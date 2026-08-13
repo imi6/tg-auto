@@ -4,6 +4,7 @@
 """
 
 from .proxy_manager import ProxyManager
+from .send_record_store import SendRecordStore
 from .account_manager import AccountManager
 from .monitor_engine import MonitorEngine
 from .batch_task_manager import BatchTaskManager
@@ -12,6 +13,7 @@ from .profile_task_manager import ProfileTaskManager
 
 __all__ = [
     'ProxyManager',
+    'SendRecordStore',
     'AccountManager',
     'MonitorEngine',
     'BatchTaskManager',

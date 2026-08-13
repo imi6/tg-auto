@@ -979,9 +979,33 @@ class MonitorEngine(metaclass=Singleton):
     def get_scheduled_messages(self):
         return self.scheduled_messages
 
+    def _record_send_result(self, message_config: Optional[dict], job_id: str, status: str,
+                            message: str = '', error: Optional[str] = None,
+                            stage: Optional[str] = None):
+        """记录一次发送结果，并把最近状态回写到任务上供列表展示"""
+        from core.send_record_store import SendRecordStore
+
+        config = message_config or {}
+        record = SendRecordStore().add(
+            job_id=job_id,
+            status=status,
+            account_id=config.get('account_id'),
+            target_id=config.get('target_id'),
+            message=message,
+            error=error,
+            stage=stage
+        )
+
+        if message_config is not None:
+            message_config['last_run_at'] = record['time']
+            message_config['last_status'] = status
+            message_config['last_error'] = error
+
+        return record
+
     async def _execute_scheduled_message(self, job_id: str):
+        message_config = None
         try:
-            message_config = None
             for msg in self.scheduled_messages:
                 if msg['job_id'] == job_id:
                     message_config = msg
@@ -989,6 +1013,7 @@ class MonitorEngine(metaclass=Singleton):
 
             if not message_config:
                 self.logger.error(f"未找到定时消息配置: {job_id}")
+                self._record_send_result(None, job_id, 'failed', error="未找到定时消息配置", stage='config')
                 return
 
             if not message_config.get('active', True):
@@ -1012,6 +1037,11 @@ class MonitorEngine(metaclass=Singleton):
 
             if not account_id or not target_id:
                 self.logger.error(f"定时消息配置不完整: account_id={account_id}, target_id={target_id}")
+                self._record_send_result(
+                    message_config, job_id, 'failed', message=message_text,
+                    error="配置不完整，缺少账号或目标", stage='config'
+                )
+                self._save_scheduled_messages()
                 return
 
             from core.account_manager import AccountManager
@@ -1020,6 +1050,11 @@ class MonitorEngine(metaclass=Singleton):
 
             if not account or not account.client:
                 self.logger.error(f"账号未找到或未连接: {account_id}")
+                self._record_send_result(
+                    message_config, job_id, 'failed', message=message_text,
+                    error=f"账号 {account_id} 未找到或未连接", stage='account'
+                )
+                self._save_scheduled_messages()
                 return
 
             if message_config.get('use_ai', False) and message_config.get('ai_prompt'):
@@ -1057,17 +1092,37 @@ class MonitorEngine(metaclass=Singleton):
                                 f"✅ AI内容生成成功: \"{message_text[:50]}{'...' if len(message_text) > 50 else ''}\"")
                         else:
                             self.logger.warning(f"⚠️ AI返回空内容，跳过此次执行")
+                            self._record_send_result(
+                                message_config, job_id, 'skipped',
+                                error="AI 返回空内容", stage='ai'
+                            )
+                            self._save_scheduled_messages()
                             return
                     else:
                         self.logger.error(f"❌ AI服务未配置，跳过此次执行")
+                        self._record_send_result(
+                            message_config, job_id, 'skipped',
+                            error="AI 服务未配置", stage='ai'
+                        )
+                        self._save_scheduled_messages()
                         return
 
                 except Exception as ai_error:
                     self.logger.error(f"❌ AI生成内容失败: {ai_error}")
+                    self._record_send_result(
+                        message_config, job_id, 'failed',
+                        error=f"AI 生成内容失败: {ai_error}", stage='ai'
+                    )
+                    self._save_scheduled_messages()
                     return
 
             if not message_text or not message_text.strip():
                 self.logger.error(f"❌ 消息内容为空，跳过发送: {job_id}")
+                self._record_send_result(
+                    message_config, job_id, 'skipped',
+                    error="消息内容为空", stage='content'
+                )
+                self._save_scheduled_messages()
                 return
 
             random_delay = message_config.get('random_delay', message_config.get('random_offset', 0))
@@ -1088,15 +1143,30 @@ class MonitorEngine(metaclass=Singleton):
                 except Exception as entity_error:
                     self.logger.error(f"❌ 无法找到目标实体 {target_id}: {entity_error}")
                     self.logger.error(f"💡 解决方案：请检查目标ID是否正确，或账号是否有权限访问此频道/群组")
+                    self._record_send_result(
+                        message_config, job_id, 'failed', message=message_text,
+                        error=f"找不到目标或无访问权限: {entity_error}", stage='entity'
+                    )
+                    self._save_scheduled_messages()
                     return
 
                 await account.client.send_message(target_id, message_text)
 
             except ValueError as ve:
                 self.logger.error(f"❌ 无效的目标ID格式: {target_id}, 错误: {ve}")
+                self._record_send_result(
+                    message_config, job_id, 'failed', message=message_text,
+                    error=f"无效的目标ID格式: {ve}", stage='target'
+                )
+                self._save_scheduled_messages()
                 return
             except Exception as send_error:
                 self.logger.error(f"❌ 发送消息失败到目标 {target_id}: {send_error}")
+                self._record_send_result(
+                    message_config, job_id, 'failed', message=message_text,
+                    error=str(send_error), stage='send'
+                )
+                self._save_scheduled_messages()
                 return
 
             old_count = execution_count
@@ -1104,6 +1174,8 @@ class MonitorEngine(metaclass=Singleton):
             new_count = message_config['execution_count']
             max_executions = message_config.get('max_executions')
 
+            self._record_send_result(message_config, job_id, 'success', message=message_text)
+            
             self.logger.info(f"✅ 定时消息执行成功: {job_id} -> {target_id}")
             self.logger.info(f"📊 执行统计更新: {old_count} → {new_count}/{max_executions or '无限制'} 次")
             if random_delay > 0:
@@ -1139,6 +1211,11 @@ class MonitorEngine(metaclass=Singleton):
 
         except Exception as e:
             self.logger.error(f"执行定时消息失败 {job_id}: {e}")
+            try:
+                self._record_send_result(message_config, job_id, 'failed', error=str(e), stage='unknown')
+                self._save_scheduled_messages()
+            except Exception as record_error:
+                self.logger.error(f"记录发送结果失败: {record_error}")
 
     def remove_scheduled_message(self, job_id: str):
         try:

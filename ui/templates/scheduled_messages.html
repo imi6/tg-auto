@@ -7,6 +7,114 @@
 
 {% block extra_css %}
 <style>
+    .record-summary {
+        display: flex;
+        gap: 20px;
+        flex-wrap: wrap;
+        padding: 14px 16px;
+        margin-bottom: 14px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        font-size: 13px;
+    }
+
+    .record-summary b {
+        font-size: 16px;
+        margin-left: 6px;
+    }
+
+    .record-toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+
+    .record-toolbar .form-select {
+        width: auto;
+    }
+
+    .record-item {
+        display: flex;
+        gap: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        margin-bottom: 8px;
+        background: var(--bg-secondary);
+    }
+
+    .record-status {
+        flex-shrink: 0;
+        width: 52px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .record-status.success {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success-color);
+    }
+
+    .record-status.failed {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--danger-color);
+    }
+
+    .record-status.skipped {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--warning-color, #f59e0b);
+    }
+
+    .record-body {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .record-line {
+        font-size: 13px;
+        color: var(--text-primary);
+        word-break: break-word;
+    }
+
+    .record-meta {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--text-muted);
+        font-family: 'SFMono-Regular', Consolas, monospace;
+    }
+
+    .record-error {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--danger-color);
+        word-break: break-word;
+    }
+
+    .record-empty {
+        padding: 48px 16px;
+        text-align: center;
+        color: var(--text-muted);
+    }
+
+    .last-run {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+        margin-left: 12px;
+    }
+
+    .last-run.success { color: var(--success-color); }
+    .last-run.failed { color: var(--danger-color); }
+    .last-run.skipped { color: var(--warning-color, #f59e0b); }
+
     .target-toolbar {
         display: flex;
         gap: 8px;
@@ -512,10 +620,16 @@
 </div>
 
 <div class="action-bar">
-    <button class="btn btn-primary" onclick="showAddModal()">
-        <i class="bi bi-plus-lg"></i>
-        添加定时消息
-    </button>
+    <div style="display: flex; gap: 12px;">
+        <button class="btn btn-primary" onclick="showAddModal()">
+            <i class="bi bi-plus-lg"></i>
+            添加定时消息
+        </button>
+        <button class="btn btn-secondary" onclick="showRecordsModal()">
+            <i class="bi bi-clock-history"></i>
+            发送记录
+        </button>
+    </div>
     
     <div>
         <span class="text-muted">共 <span id="message-count">0</span> 条定时消息</span>
@@ -536,6 +650,40 @@
             <i class="bi bi-plus-lg"></i>
             添加定时消息
         </button>
+    </div>
+</div>
+
+<div class="modal" id="recordsModal">
+    <div class="modal-content" style="max-width: 860px;">
+        <div class="modal-header">
+            <h3 class="modal-title" id="recordsTitle">发送记录</h3>
+            <button class="modal-close" onclick="closeRecordsModal()">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+
+        <div class="modal-body">
+            <div class="record-summary" id="record-summary"></div>
+
+            <div class="record-toolbar">
+                <select class="form-select" id="record-status-filter" onchange="loadRecords()">
+                    <option value="">全部状态</option>
+                    <option value="success">仅成功</option>
+                    <option value="failed">仅失败</option>
+                    <option value="skipped">仅跳过</option>
+                </select>
+                <button class="btn btn-sm btn-secondary" onclick="loadRecords()">
+                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                </button>
+                <button class="btn btn-sm btn-secondary" onclick="clearRecords()">
+                    <i class="bi bi-trash"></i> 清空记录
+                </button>
+            </div>
+
+            <div id="records-list">
+                <div class="record-empty">加载中...</div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -893,9 +1041,123 @@
         }
     }
     
+    let recordsJobId = null;
+
+    const RECORD_LABEL = { success: '成功', failed: '失败', skipped: '跳过' };
+    const STAGE_LABEL = {
+        config: '配置', account: '账号', ai: 'AI 生成', content: '内容',
+        entity: '目标', target: '目标', send: '发送', unknown: '未知'
+    };
+
+    function showRecordsModal(jobId) {
+        recordsJobId = jobId || null;
+        document.getElementById('recordsTitle').textContent =
+            recordsJobId ? '该条消息的发送记录' : '发送记录';
+        document.getElementById('record-status-filter').value = '';
+        document.getElementById('recordsModal').classList.add('show');
+        loadRecords();
+    }
+
+    function closeRecordsModal() {
+        document.getElementById('recordsModal').classList.remove('show');
+        recordsJobId = null;
+    }
+
+    async function loadRecords() {
+        const list = document.getElementById('records-list');
+        const params = new URLSearchParams({ limit: '200' });
+        if (recordsJobId) params.set('job_id', recordsJobId);
+
+        const status = document.getElementById('record-status-filter').value;
+        if (status) params.set('status', status);
+
+        list.innerHTML = '<div class="record-empty">加载中...</div>';
+
+        try {
+            const response = await fetch(`/api/scheduled-messages/records?${params}`);
+            const data = await response.json();
+            renderRecordSummary(data.statistics || {});
+            renderRecords(data.records || []);
+        } catch (error) {
+            console.error('获取发送记录失败:', error);
+            list.innerHTML = '<div class="record-empty">获取发送记录失败</div>';
+        }
+    }
+
+    function renderRecordSummary(stats) {
+        document.getElementById('record-summary').innerHTML = `
+            <span>总计<b>${stats.total || 0}</b></span>
+            <span style="color: var(--success-color);">成功<b>${stats.success || 0}</b></span>
+            <span style="color: var(--danger-color);">失败<b>${stats.failed || 0}</b></span>
+            <span style="color: var(--warning-color, #f59e0b);">跳过<b>${stats.skipped || 0}</b></span>
+        `;
+    }
+
+    function renderRecords(records) {
+        const list = document.getElementById('records-list');
+
+        if (!records.length) {
+            list.innerHTML = '<div class="record-empty">暂无发送记录，定时任务执行后会自动记录在这里</div>';
+            return;
+        }
+
+        list.innerHTML = records.map(record => `
+            <div class="record-item">
+                <span class="record-status ${record.status}">${RECORD_LABEL[record.status] || record.status}</span>
+                <div class="record-body">
+                    <div class="record-line">${escapeHtml(record.preview || '（无内容预览）')}</div>
+                    <div class="record-meta">
+                        ${escapeHtml((record.time || '').replace('T', ' '))}
+                        · 目标 ${escapeHtml(record.target_id)}
+                        · 账号 ${escapeHtml(record.account_id || '未知')}
+                    </div>
+                    ${record.error ? `
+                        <div class="record-error">
+                            ${record.stage ? `[${STAGE_LABEL[record.stage] || record.stage}] ` : ''}${escapeHtml(record.error)}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `).join('');
+    }
+
+    async function clearRecords() {
+        const scope = recordsJobId ? '这条消息的' : '全部';
+        if (!confirm(`确定清空${scope}发送记录吗？`)) return;
+
+        const params = recordsJobId ? `?job_id=${encodeURIComponent(recordsJobId)}` : '';
+        try {
+            const response = await fetch(`/api/scheduled-messages/records${params}`, { method: 'DELETE' });
+            const data = await response.json();
+            showNotification(data.message, 'success');
+            loadRecords();
+        } catch (error) {
+            console.error('清空发送记录失败:', error);
+            showNotification('清空失败', 'error');
+        }
+    }
+
     let targetOptions = [];
     let selectedTargets = new Set();
     let loadedTargetsFor = null;
+
+    function formatLastRun(msg) {
+        if (!msg.last_run_at) return '';
+
+        const icons = {
+            success: 'bi-check-circle-fill',
+            failed: 'bi-x-circle-fill',
+            skipped: 'bi-slash-circle-fill'
+        };
+        const status = msg.last_status || 'success';
+        const time = String(msg.last_run_at).replace('T', ' ').slice(5, 16);
+        const title = msg.last_error ? escapeHtml(msg.last_error) : '';
+
+        return `<span class="last-run ${status}" title="${title}">
+            <i class="bi ${icons[status] || 'bi-info-circle'}"></i>
+            上次${RECORD_LABEL[status] || status} ${time}
+        </span>`;
+    }
 
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -1132,9 +1394,13 @@
                         <div class="message-card-title">定时消息 #${msg.job_id || msg.id}</div>
                         <div class="message-card-time">
                             <i class="bi bi-clock"></i> ${formatScheduleDisplay(msg)}
+                            ${formatLastRun(msg)}
                         </div>
                     </div>
                     <div class="message-card-actions">
+                        <button class="btn btn-icon" onclick="showRecordsModal('${msg.job_id || msg.id}')" title="发送记录">
+                            <i class="bi bi-clock-history"></i>
+                        </button>
                         <button class="btn btn-icon" onclick="editMessage('${msg.job_id || msg.id}')" title="编辑">
                             <i class="bi bi-pencil"></i>
                         </button>
@@ -1520,6 +1786,9 @@
                     <p><strong>发送后删除:</strong> ${msg.delete_after_send ? '是' : '否'}</p>
                     <p><strong>最大执行次数:</strong> ${msg.max_executions || '无限制'}</p>
                     <p><strong>已执行次数:</strong> ${msg.execution_count || 0}</p>
+                    <p><strong>上次发送:</strong> ${msg.last_run_at
+                        ? `${RECORD_LABEL[msg.last_status] || msg.last_status || ''} ${String(msg.last_run_at).replace('T', ' ')}${msg.last_error ? `（${escapeHtml(msg.last_error)}）` : ''}`
+                        : '尚未执行'}</p>
                 </div>
             </div>
         `;
