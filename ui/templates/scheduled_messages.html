@@ -129,7 +129,6 @@
         align-items: center;
         gap: 4px;
         font-size: 12px;
-        margin-left: 12px;
     }
 
     .last-run.success { color: var(--success-color); }
@@ -410,8 +409,37 @@
     }
     
     .message-card-time {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px 14px;
         font-size: 13px;
         color: var(--text-secondary);
+    }
+
+    .message-card-time > span {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .message-account {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin: 4px 0 6px;
+        padding: 2px 9px;
+        max-width: 100%;
+        background: var(--bg-tertiary);
+        border-radius: 999px;
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+
+    .message-account span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     
     .message-card-actions {
@@ -930,6 +958,7 @@
 <script>
     let messages = [];
     let editingId = null;
+    let accountMap = {};
     
     document.addEventListener('DOMContentLoaded', function() {
         loadMessages();
@@ -1201,7 +1230,7 @@
                     <div class="record-meta">
                         ${escapeHtml((record.time || '').replace('T', ' '))}
                         · ${formatRecordTargets(record)}
-                        · 账号 ${escapeHtml(record.account_id || '未知')}
+                        · 账号 ${escapeHtml(record.account_id ? accountLabel(record.account_id) : '未知')}
                     </div>
                     ${record.error ? `
                         <div class="record-error">
@@ -1279,6 +1308,26 @@
         if (!targets.length) return '未设置';
         if (targets.length === 1) return escapeHtml(targets[0]);
         return `${targets.length} 个群组/频道`;
+    }
+
+    function accountLabel(accountId) {
+        if (!accountId) return '未设置';
+
+        // 账号列表可能还没加载完，先用 account_id 顶着，加载完会重新渲染
+        const account = accountMap[accountId];
+        return account
+            ? [account.name, account.phone].filter(Boolean).join(' · ')
+            : accountId;
+    }
+
+    function formatAccount(msg) {
+        if (!msg.account_id) {
+            return '<div class="message-account"><i class="bi bi-person-x"></i><span>未指定账号</span></div>';
+        }
+
+        return `<div class="message-account" title="${escapeHtml(msg.account_id)}">
+            <i class="bi bi-person-circle"></i><span>${escapeHtml(accountLabel(msg.account_id))}</span>
+        </div>`;
     }
 
     function formatLastRun(msg) {
@@ -1553,14 +1602,23 @@
             const select = document.getElementById('account-selector');
             
             select.innerHTML = '<option value="">请选择账号</option>';
+            accountMap = {};
             
             if (data.accounts && data.accounts.length > 0) {
                 data.accounts.forEach(account => {
+                    accountMap[account.account_id] = account;
+                    
                     const option = document.createElement('option');
                     option.value = account.account_id;
-                    option.textContent = `${account.phone} (${account.account_id})`;
+                    option.textContent = account.name
+                        ? `${account.name} · ${account.phone}`
+                        : `${account.phone} (${account.account_id})`;
                     select.appendChild(option);
                 });
+            }
+            
+            if (messages.length) {
+                renderMessages();
             }
         } catch (error) {
             console.error('加载账号失败:', error);
@@ -1636,10 +1694,11 @@
         grid.innerHTML = messages.map(msg => `
             <div class="message-card">
                 <div class="message-card-header">
-                    <div>
+                    <div style="min-width: 0;">
                         <div class="message-card-title">定时消息 #${msg.job_id || msg.id}</div>
+                        ${formatAccount(msg)}
                         <div class="message-card-time">
-                            <i class="bi bi-clock"></i> ${formatScheduleDisplay(msg)}
+                            <span><i class="bi bi-clock"></i> ${formatScheduleDisplay(msg)}</span>
                             ${formatLastRun(msg)}
                         </div>
                     </div>
@@ -2023,7 +2082,7 @@
                 ">
                     <p><strong>消息ID:</strong> ${msg.job_id || msg.id}</p>
                     <p><strong>状态:</strong> ${msg.active !== false ? '运行中' : '已暂停'}</p>
-                    <p><strong>账号:</strong> ${msg.account_id || '未设置'}</p>
+                    <p><strong>账号:</strong> ${accountLabel(msg.account_id)}</p>
                     <p><strong>目标频道/群组:</strong> ${formatTargets(msg)}</p>
                     ${getMessageTargets(msg).length > 1 ? `
                         <details style="margin: -8px 0 12px 0;">
