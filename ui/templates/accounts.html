@@ -644,6 +644,15 @@
                 </div>
 
                 <div class="form-group">
+                    <label>配套的 JSON 文件（可选）</label>
+                    <input type="file" id="sessionMetaFile" accept=".json"
+                           style="padding: 8px; border: 2px dashed var(--border-color); border-radius: var(--radius-md); width: 100%; cursor: pointer;">
+                    <small style="color: var(--text-muted); margin-top: 4px; display: block;">
+                        同名 .json（例如：15597438221.json），自动读取 API 凭据与设备信息
+                    </small>
+                </div>
+
+                <div class="form-group">
                     <label>代理（可选）</label>
                     <select class="form-input" id="importProxySelect">
                         <option value="">不使用代理</option>
@@ -683,8 +692,9 @@
                         <strong>提示：</strong>
                         <ul style="margin: 8px 0 0 20px;">
                             <li>只需选择 .session 文件即可导入，手机号会自动识别</li>
-                            <li>API ID 和 API Hash 默认取 .env 中的 TG_API_ID / TG_API_HASH</li>
-                            <li>若该 session 是用另一组 API 凭据创建的，请在高级选项中填写对应的值</li>
+                            <li>session 文件本身不含 API 凭据，若有配套的 .json 请一并上传，能顺带还原设备信息</li>
+                            <li>没有 json 时依次取 .env 中的 TG_API_ID / TG_API_HASH、已有账号的凭据</li>
+                            <li>都没有，或该 session 是用另一组凭据创建的，请在高级选项中填写</li>
                         </ul>
                     </div>
                 </div>
@@ -1293,6 +1303,11 @@
             formData.append('api_id', apiId);
             formData.append('api_hash', apiHash);
             formData.append('proxy_id', document.getElementById('importProxySelect').value);
+
+            const metaFile = document.getElementById('sessionMetaFile').files[0];
+            if (metaFile) {
+                formData.append('meta_file', metaFile);
+            }
 
             const response = await fetch('/api/accounts/upload-session', {
                 method: 'POST',

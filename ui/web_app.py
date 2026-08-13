@@ -25,7 +25,8 @@ from core import AccountManager, MonitorEngine
 from core.account_manager import AccountFactory
 from core.join_task_manager import JoinTaskManager
 from core.profile_task_manager import ProfileTaskManager
-from core.proxy_manager import ProxyManager, build_proxy_tuple
+from core.proxy_manager import ProxyManager
+from utils.session_meta import parse_session_metadata
 from models import Account, AccountConfig
 from models.config import KeywordConfig, FileConfig, AIMonitorConfig, MatchType, ScheduledMessageConfig
 from models.task import STATUS_SUCCESS
@@ -263,8 +264,24 @@ class WebApp:
         
         self.logger.info(f"Web认证已启用，用户名: {self.web_username}")
     
+    def borrow_account_credentials(self) -> Optional[tuple]:
+        """借用任一已有账号的 API 凭据
+
+        .env 里没配默认值时的兜底，避免用户每次导入都得手填一遍。
+        """
+        for account in self.account_manager.list_accounts():
+            try:
+                api_id = int(account.config.api_id)
+            except (TypeError, ValueError):
+                continue
+            
+            if api_id and account.config.api_hash:
+                return api_id, account.config.api_hash
+        
+        return None
+    
     def resolve_api_credentials(self, api_id: Any, api_hash: Any) -> Optional[tuple]:
-        """未显式提供 API ID / Hash 时回退到 .env 中的默认配置"""
+        """未显式提供 API ID / Hash 时依次回退到 .env 默认配置、已有账号的凭据"""
         raw_id = str(api_id if api_id is not None else '').strip()
         raw_hash = str(api_hash or '').strip()
         
@@ -273,6 +290,12 @@ class WebApp:
                 raw_id = str(getattr(config, 'TG_API_ID', '') or '').strip()
             if not raw_hash:
                 raw_hash = str(getattr(config, 'TG_API_HASH', '') or '').strip()
+        
+        # 两项都缺才借用，否则会把用户填的一半和别处的一半拼在一起
+        if not raw_id and not raw_hash:
+            borrowed = self.borrow_account_credentials()
+            if borrowed:
+                return borrowed
         
         try:
             parsed_id = int(raw_id)
@@ -283,22 +306,6 @@ class WebApp:
             return None
         
         return parsed_id, raw_hash
-    
-    def resolve_test_credentials(self) -> Optional[tuple]:
-        """代理测试用的 API 凭据
-
-        优先取 .env 中的默认配置；没有时借用任一已导入账号的凭据，
-        以便仍能做完整的 Telegram 握手测试，而不是退化成只测 TCP。
-        """
-        credentials = self.resolve_api_credentials(None, None)
-        if credentials:
-            return credentials
-        
-        for account in self.account_manager.list_accounts():
-            if account.config.api_id and account.config.api_hash:
-                return account.config.api_id, account.config.api_hash
-        
-        return None
     
     @staticmethod
     def resolve_session_phone(phone: Optional[str], me, filename: Optional[str] = None) -> str:
@@ -731,13 +738,7 @@ class WebApp:
                     proxy_id=proxy_id
                 )
                 
-                from telethon import TelegramClient
-                client = TelegramClient(
-                    account_config.session_name,
-                    account_config.api_id,
-                    account_config.api_hash,
-                    proxy=account_config.proxy
-                )
+                client = self.account_manager.create_client(account_config)
                 
                 await client.connect()
                 
@@ -773,11 +774,12 @@ class WebApp:
         @self.app.post("/api/accounts/upload-session")
         async def upload_session(request: Request, file: UploadFile = Form(...), phone: str = Form(""),
                                  api_id: str = Form(""), api_hash: str = Form(""),
-                                 proxy_id: str = Form("")):
+                                 proxy_id: str = Form(""),
+                                 meta_file: Optional[UploadFile] = Form(None)):
             """上传并导入 .session 文件
 
-            手机号、API ID、API Hash 均为选填：
-            手机号从 session 登录用户信息中读取，API 凭据回退到 .env 默认配置。
+            手机号、API ID、API Hash 均为选填：手机号从 session 登录用户信息中读取；
+            API 凭据可由配套的 .json 提供，也可回退到 .env 默认配置或已有账号的凭据。
             """
             user = self.get_current_user(request)
             
@@ -788,13 +790,21 @@ class WebApp:
                 if not proxy_config:
                     return {"success": False, "message": f"代理配置不存在: {selected_proxy_id}"}
             
-            credentials = self.resolve_api_credentials(api_id, api_hash)
+            metadata = parse_session_metadata(await meta_file.read()) if meta_file else {}
+            
+            # 优先级：表单填写 > 配套 json > .env 默认值 > 已有账号的凭据
+            credentials = self.resolve_api_credentials(
+                api_id or metadata.get('api_id'),
+                api_hash or metadata.get('api_hash')
+            )
             if not credentials:
                 return {
                     "success": False,
-                    "message": "缺少 API ID / API Hash，请在表单中填写，或在 .env 中配置 TG_API_ID 和 TG_API_HASH"
+                    "message": "缺少 API ID / API Hash：请上传该 session 配套的 .json 文件，"
+                               "或展开「高级选项」手动填写，也可在 .env 中配置 TG_API_ID 和 TG_API_HASH"
                 }
             resolved_api_id, resolved_api_hash = credentials
+            device_params = metadata.get('device_params') or None
             
             sessions_dir = Path("sessions")
             sessions_dir.mkdir(exist_ok=True)
@@ -802,18 +812,20 @@ class WebApp:
             # 先落到临时文件，确认 session 有效并拿到手机号后再改名
             temp_path = sessions_dir / f"_importing_{secrets.token_hex(6)}.session"
             client = None
-            telethon_proxy = build_proxy_tuple(proxy_config)
             
             try:
                 content = await file.read()
                 temp_path.write_bytes(content)
                 
-                from telethon import TelegramClient
-                client = TelegramClient(
-                    str(temp_path.with_suffix('')),
-                    resolved_api_id,
-                    resolved_api_hash,
-                    proxy=telethon_proxy
+                probe_config = AccountFactory.create_account_config(
+                    phone='',
+                    api_id=resolved_api_id,
+                    api_hash=resolved_api_hash,
+                    proxy_config=proxy_config,
+                    device_params=device_params
+                )
+                client = self.account_manager.create_client(
+                    probe_config, session_name=str(temp_path.with_suffix(''))
                 )
                 await client.connect()
                 
@@ -821,7 +833,7 @@ class WebApp:
                     return {"success": False, "message": "Session 文件无效或已过期，请重新登录"}
                 
                 me = await client.get_me()
-                account_id = self.resolve_session_phone(phone, me, file.filename)
+                account_id = self.resolve_session_phone(phone or metadata.get('phone'), me, file.filename)
                 
                 if self.account_manager.get_account(account_id):
                     return {"success": False, "message": f"账号 {account_id} 已存在，请勿重复导入"}
@@ -839,17 +851,13 @@ class WebApp:
                     api_id=resolved_api_id,
                     api_hash=resolved_api_hash,
                     proxy_config=proxy_config,
-                    proxy_id=selected_proxy_id or None
+                    proxy_id=selected_proxy_id or None,
+                    device_params=device_params
                 )
                 # 记录实际路径，否则重启后会去项目根目录找不到该 session
                 account_config.session_name = str(session_path.with_suffix(''))
                 
-                client = TelegramClient(
-                    account_config.session_name,
-                    account_config.api_id,
-                    account_config.api_hash,
-                    proxy=account_config.proxy
-                )
+                client = self.account_manager.create_client(account_config)
                 await client.connect()
                 
                 account = Account(
@@ -892,7 +900,8 @@ class WebApp:
                 if not credentials:
                     return {
                         "success": False,
-                        "message": "缺少 API ID / API Hash，请在请求中提供，或在 .env 中配置 TG_API_ID 和 TG_API_HASH"
+                        "message": "缺少 API ID / API Hash：请在请求中提供，"
+                                   "或在 .env 中配置 TG_API_ID 和 TG_API_HASH 后重启服务"
                     }
                 resolved_api_id, resolved_api_hash = credentials
                 proxy_config, proxy_id = self.resolve_proxy_source(import_req)
@@ -914,13 +923,7 @@ class WebApp:
                 # 记录实际路径，否则重启后会去项目根目录找不到该 session
                 account_config.session_name = str(session_path.with_suffix(''))
                 
-                from telethon import TelegramClient
-                client = TelegramClient(
-                    account_config.session_name,
-                    account_config.api_id,
-                    account_config.api_hash,
-                    proxy=account_config.proxy
-                )
+                client = self.account_manager.create_client(account_config)
                 
                 await client.connect()
                 
@@ -1819,7 +1822,7 @@ class WebApp:
             if error:
                 return {"success": False, "ok": False, "message": error}
             
-            credentials = self.resolve_test_credentials()
+            credentials = self.resolve_api_credentials(None, None)
             api_id, api_hash = credentials if credentials else (None, None)
             
             result = await self.proxy_manager.test_proxy(data, api_id, api_hash)
@@ -1833,7 +1836,7 @@ class WebApp:
             if not proxy_config:
                 raise HTTPException(status_code=404, detail="代理不存在")
             
-            credentials = self.resolve_test_credentials()
+            credentials = self.resolve_api_credentials(None, None)
             api_id, api_hash = credentials if credentials else (None, None)
             
             result = await self.proxy_manager.test_proxy(proxy_config, api_id, api_hash, proxy_id=proxy_id)

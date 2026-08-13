@@ -47,7 +47,8 @@ class AccountManager(metaclass=Singleton):
                         api_hash=account_data['config']['api_hash'],
                         proxy=account_data['config'].get('proxy'),
                         session_name=account_data['config'].get('session_name', account_data['config']['phone']),
-                        proxy_id=account_data['config'].get('proxy_id')
+                        proxy_id=account_data['config'].get('proxy_id'),
+                        device_params=account_data['config'].get('device_params')
                     )
                     
                     account = Account(
@@ -88,6 +89,7 @@ class AccountManager(metaclass=Singleton):
                         'api_hash': account.config.api_hash,
                         'proxy': account.config.proxy,
                         'proxy_id': account.config.proxy_id,
+                        'device_params': account.config.device_params,
                         'session_name': account.config.session_name
                     },
                     'own_user_id': account.own_user_id,
@@ -119,18 +121,33 @@ class AccountManager(metaclass=Singleton):
         
         return config.proxy
     
+    def create_client(self, config: AccountConfig, session_name: Optional[str] = None) -> TelegramClient:
+        """按账号配置创建客户端，统一带上代理与设备信息"""
+        device_params = dict(config.device_params or {})
+        lang_pack = device_params.pop('lang_pack', None)
+        
+        client = TelegramClient(
+            session_name or config.session_name,
+            config.api_id,
+            config.api_hash,
+            proxy=self.resolve_proxy(config),
+            **device_params
+        )
+        
+        # Telethon 把 lang_pack 固定成空串，官方客户端导出的 session 需要还原成原值，
+        # 否则设备指纹与其自称的客户端版本对不上
+        if lang_pack and getattr(client, '_init_request', None) is not None:
+            client._init_request.lang_pack = lang_pack
+        
+        return client
+    
     async def connect_account(self, account_id: str) -> bool:
         account = self.get_account(account_id)
         if not account:
             return False
         
         try:
-            client = TelegramClient(
-                account.config.session_name,
-                account.config.api_id,
-                account.config.api_hash,
-                proxy=self.resolve_proxy(account.config)
-            )
+            client = self.create_client(account.config)
             
             await client.connect()
             
@@ -241,12 +258,7 @@ class AccountManager(metaclass=Singleton):
     
     async def create_and_login_account(self, config: AccountConfig) -> Optional[Account]:
         try:
-            client = TelegramClient(
-                config.session_name,
-                config.api_id,
-                config.api_hash,
-                proxy=self.resolve_proxy(config)
-            )
+            client = self.create_client(config)
             
             await client.connect()
             
@@ -345,14 +357,16 @@ class AccountFactory:
         api_id: int,
         api_hash: str,
         proxy_config: Optional[Dict] = None,
-        proxy_id: Optional[str] = None
+        proxy_id: Optional[str] = None,
+        device_params: Optional[Dict[str, str]] = None
     ) -> AccountConfig:
         return AccountConfig(
             phone=phone,
             api_id=api_id,
             api_hash=api_hash,
             proxy=build_proxy_tuple(proxy_config),
-            proxy_id=proxy_id
+            proxy_id=proxy_id,
+            device_params=device_params or None
         )
     
     @staticmethod
