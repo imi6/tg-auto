@@ -131,6 +131,66 @@
         font-size: 12px;
     }
 
+    .template-picker {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+
+    .template-picker .form-select {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .template-editor {
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .template-editor-actions {
+        display: flex;
+        gap: 8px;
+    }
+
+    .template-item {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .template-item:last-child {
+        border-bottom: none;
+    }
+
+    .template-item-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .template-item-preview {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        word-break: break-word;
+    }
+
+    .template-item-meta {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+
+    .template-item-actions {
+        display: flex;
+        gap: 6px;
+        flex-shrink: 0;
+    }
+
     .last-run.success { color: var(--success-color); }
     .last-run.partial { color: var(--warning-color, #f59e0b); }
     .last-run.failed { color: var(--danger-color); }
@@ -716,6 +776,10 @@
             <i class="bi bi-plus-lg"></i>
             添加定时消息
         </button>
+        <button class="btn btn-secondary" onclick="showTemplateModal()">
+            <i class="bi bi-file-earmark-text"></i>
+            消息模板
+        </button>
         <button class="btn btn-secondary" onclick="showRecordsModal()">
             <i class="bi bi-clock-history"></i>
             发送记录
@@ -741,6 +805,40 @@
             <i class="bi bi-plus-lg"></i>
             添加定时消息
         </button>
+    </div>
+</div>
+
+<div class="modal" id="templateModal">
+    <div class="modal-content" style="max-width: 720px;">
+        <div class="modal-header">
+            <h3 class="modal-title" id="templateModalTitle">消息模板</h3>
+            <button class="modal-close" onclick="closeTemplateModal()">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="template-editor" id="templateEditor">
+                <div class="form-group">
+                    <label class="form-label">模板名称</label>
+                    <input type="text" class="form-input" id="template-title" placeholder="例如：GPT PLUS 广告">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">模板内容</label>
+                    <textarea class="form-textarea" id="template-content" rows="5" placeholder="要发送的完整文案"></textarea>
+                </div>
+                <div class="template-editor-actions">
+                    <button type="button" class="btn btn-primary btn-sm" onclick="submitTemplate()">保存模板</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="resetTemplateEditor()">取消编辑</button>
+                </div>
+            </div>
+
+            <div class="record-toolbar">
+                <input type="text" class="form-input" id="template-search" placeholder="搜索模板名称或内容" oninput="renderTemplates()">
+            </div>
+            <div id="template-list">
+                <div class="record-empty">加载中...</div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -813,7 +911,15 @@
                 
                 <div class="form-group" id="text-message-group">
                     <label class="form-label">消息内容</label>
-                    <textarea class="form-textarea" id="message-content" placeholder="输入要发送的消息内容"></textarea>
+                    <div class="template-picker">
+                        <select class="form-select" id="template-picker" onchange="applyTemplate()">
+                            <option value="">从模板填入...</option>
+                        </select>
+                        <button type="button" class="btn btn-sm btn-secondary" onclick="saveCurrentAsTemplate()">
+                            存为模板
+                        </button>
+                    </div>
+                    <textarea class="form-textarea" id="message-content" placeholder="输入要发送的消息内容，或从上方选择模板"></textarea>
                 </div>
                 
                 <div class="form-group">
@@ -959,10 +1065,13 @@
     let messages = [];
     let editingId = null;
     let accountMap = {};
+    let messageTemplates = [];
+    let editingTemplateId = null;
     
     document.addEventListener('DOMContentLoaded', function() {
         loadMessages();
         loadAccounts();
+        loadTemplates();
         
         const cronInput = document.getElementById('cron-expression');
         if (cronInput) {
@@ -1497,6 +1606,7 @@
         admin_only: '仅管理员可发言',
         restricted: '当前账号被禁言',
         left: '已退出或被移出',
+        forum: '话题群，无法直接发送',
         not_found: '找不到该目标',
         flood: '触发限流，未检查',
         unknown: '状态未知'
@@ -1754,6 +1864,8 @@
         resetTargetSelection();
         document.getElementById('send-interval').value = 5;
         document.getElementById('precheck-enabled').checked = true;
+        document.getElementById('template-picker').value = '';
+        fillTemplatePicker();
         document.getElementById('messageModal').classList.add('show');
         loadTargetOptions();
     }
@@ -1809,6 +1921,197 @@
     function closeModal() {
         document.getElementById('messageModal').classList.remove('show');
         editingId = null;
+    }
+
+    async function loadTemplates() {
+        try {
+            const response = await fetch('/api/message-templates');
+            const data = await response.json();
+            messageTemplates = data.templates || [];
+            fillTemplatePicker();
+            renderTemplates();
+        } catch (error) {
+            console.error('加载消息模板失败:', error);
+        }
+    }
+
+    function fillTemplatePicker() {
+        const select = document.getElementById('template-picker');
+        if (!select) return;
+
+        const current = select.value;
+        select.innerHTML = '<option value="">从模板填入...</option>' + messageTemplates.map(item =>
+            `<option value="${item.template_id}">${escapeHtml(item.title)}</option>`
+        ).join('');
+        if (current && messageTemplates.some(item => item.template_id === current)) {
+            select.value = current;
+        }
+    }
+
+    function applyTemplate() {
+        const templateId = document.getElementById('template-picker').value;
+        const item = messageTemplates.find(tpl => tpl.template_id === templateId);
+        if (!item) return;
+
+        document.querySelector('input[name="message_type"][value="text"]').checked = true;
+        toggleMessageType();
+        document.getElementById('message-content').value = item.content || '';
+    }
+
+    async function saveCurrentAsTemplate() {
+        const content = document.getElementById('message-content').value.trim();
+        if (!content) {
+            showNotification('请先填写消息内容', 'warning');
+            return;
+        }
+
+        const title = prompt('给这条模板起个名字（可留空，默认用正文前几个字）', '') || '';
+        try {
+            const response = await fetch('/api/message-templates', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title, content })
+            });
+            const data = await response.json();
+            if (!data.success) {
+                showNotification(data.detail || data.message || '保存失败', 'error');
+                return;
+            }
+
+            showNotification('已存为模板', 'success');
+            await loadTemplates();
+            document.getElementById('template-picker').value = data.template.template_id;
+        } catch (error) {
+            console.error('保存模板失败:', error);
+            showNotification('保存模板失败', 'error');
+        }
+    }
+
+    function showTemplateModal() {
+        resetTemplateEditor();
+        document.getElementById('templateModal').classList.add('show');
+        loadTemplates();
+    }
+
+    function closeTemplateModal() {
+        document.getElementById('templateModal').classList.remove('show');
+        editingTemplateId = null;
+    }
+
+    function resetTemplateEditor() {
+        editingTemplateId = null;
+        document.getElementById('templateModalTitle').textContent = '消息模板';
+        document.getElementById('template-title').value = '';
+        document.getElementById('template-content').value = '';
+    }
+
+    function editTemplate(templateId) {
+        const item = messageTemplates.find(tpl => tpl.template_id === templateId);
+        if (!item) return;
+
+        editingTemplateId = templateId;
+        document.getElementById('templateModalTitle').textContent = '编辑模板';
+        document.getElementById('template-title').value = item.title || '';
+        document.getElementById('template-content').value = item.content || '';
+        document.getElementById('template-title').focus();
+    }
+
+    async function submitTemplate() {
+        const title = document.getElementById('template-title').value.trim();
+        const content = document.getElementById('template-content').value.trim();
+        if (!content) {
+            showNotification('模板内容不能为空', 'warning');
+            return;
+        }
+
+        const url = editingTemplateId
+            ? `/api/message-templates/${encodeURIComponent(editingTemplateId)}`
+            : '/api/message-templates';
+
+        try {
+            const response = await fetch(url, {
+                method: editingTemplateId ? 'PUT' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title, content })
+            });
+            const data = await response.json();
+            if (!data.success) {
+                showNotification(data.detail || data.message || '保存失败', 'error');
+                return;
+            }
+
+            showNotification(data.message || '已保存', 'success');
+            resetTemplateEditor();
+            await loadTemplates();
+        } catch (error) {
+            console.error('保存模板失败:', error);
+            showNotification('保存模板失败', 'error');
+        }
+    }
+
+    async function deleteTemplate(templateId) {
+        if (!confirm('确定删除这条模板吗？')) return;
+
+        try {
+            const response = await fetch(`/api/message-templates/${encodeURIComponent(templateId)}`, {
+                method: 'DELETE'
+            });
+            const data = await response.json();
+            if (!data.success) {
+                showNotification(data.detail || data.message || '删除失败', 'error');
+                return;
+            }
+
+            showNotification('模板已删除', 'success');
+            if (editingTemplateId === templateId) {
+                resetTemplateEditor();
+            }
+            await loadTemplates();
+        } catch (error) {
+            console.error('删除模板失败:', error);
+            showNotification('删除模板失败', 'error');
+        }
+    }
+
+    function useTemplateInForm(templateId) {
+        closeTemplateModal();
+        if (!document.getElementById('messageModal').classList.contains('show')) {
+            showAddModal();
+        }
+        document.getElementById('template-picker').value = templateId;
+        applyTemplate();
+    }
+
+    function renderTemplates() {
+        const list = document.getElementById('template-list');
+        if (!list) return;
+
+        const keyword = (document.getElementById('template-search').value || '').trim().toLowerCase();
+        const items = messageTemplates.filter(item =>
+            !keyword
+            || (item.title || '').toLowerCase().includes(keyword)
+            || (item.content || '').toLowerCase().includes(keyword)
+        );
+
+        if (!items.length) {
+            list.innerHTML = `<div class="record-empty">${messageTemplates.length ? '没有匹配的模板' : '还没有模板，先在上方保存一条'}</div>`;
+            return;
+        }
+
+        list.innerHTML = items.map(item => `
+            <div class="template-item">
+                <div>
+                    <div class="template-item-title">${escapeHtml(item.title)}</div>
+                    <div class="template-item-preview">${escapeHtml(item.preview || item.content || '')}</div>
+                    <div class="template-item-meta">用过 ${item.used_count || 0} 次</div>
+                </div>
+                <div class="template-item-actions">
+                    <button type="button" class="btn btn-sm btn-primary" onclick="useTemplateInForm('${item.template_id}')">使用</button>
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="editTemplate('${item.template_id}')">编辑</button>
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="deleteTemplate('${item.template_id}')">删除</button>
+                </div>
+            </div>
+        `).join('');
     }
     
     function toggleMessageType() {
@@ -1878,7 +2181,8 @@
             delete_after_send: document.getElementById('delete-after-send').checked,
             max_executions: maxExecutions,
             send_interval: parseFloat(document.getElementById('send-interval').value) || 0,
-            precheck: document.getElementById('precheck-enabled').checked
+            precheck: document.getElementById('precheck-enabled').checked,
+            template_id: document.getElementById('template-picker').value || ''
         };
         
         console.log('保存定时消息，数据:', formData);

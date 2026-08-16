@@ -195,40 +195,75 @@ class AccountManager(metaclass=Singleton):
             self.logger.error(f"添加账号失败: {e}")
             return False
     
-    def remove_account(self, account_id: str) -> bool:
+    async def _disconnect_client(self, client) -> None:
+        """安全断开 Telethon 客户端
+
+        1.44 起 disconnect() 在事件循环已运行时会直接返回 Future，
+        不能再包进 create_task，否则会报 a coroutine was expected。
+        """
+        if not client:
+            return
+
+        try:
+            connected = getattr(client, 'is_connected', None)
+            if callable(connected) and not connected():
+                return
+        except Exception:
+            pass
+
+        try:
+            result = client.disconnect()
+            if asyncio.isfuture(result) or asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            self.logger.warning(f"断开账号连接失败: {e}")
+
+    def _delete_session_files(self, session_name: Optional[str]) -> None:
+        if not session_name:
+            return
+
+        session_file = Path(f"{session_name}.session")
+        if session_file.exists():
+            try:
+                session_file.unlink()
+                self.logger.info(f"已删除session文件: {session_file}")
+            except Exception as e:
+                self.logger.error(f"删除session文件失败: {e}")
+
+        session_journal = Path(f"{session_name}.session-journal")
+        if session_journal.exists():
+            try:
+                session_journal.unlink()
+                self.logger.debug(f"已删除session-journal文件: {session_journal}")
+            except Exception as e:
+                self.logger.debug(f"删除session-journal文件失败: {e}")
+
+    async def remove_account(self, account_id: str) -> bool:
         if account_id not in self.accounts:
             self.logger.warning(f"账号 {account_id} 不存在")
             return False
-        
+
         try:
             account = self.accounts[account_id]
-            
-            if account.client and account.client.is_connected():
-                asyncio.create_task(account.client.disconnect())
-            
-            session_file = Path(f"{account.config.session_name}.session")
-            if session_file.exists():
-                try:
-                    session_file.unlink()
-                    self.logger.info(f"已删除session文件: {session_file}")
-                except Exception as e:
-                    self.logger.error(f"删除session文件失败: {e}")
-            
-            session_journal = Path(f"{account.config.session_name}.session-journal")
-            if session_journal.exists():
-                try:
-                    session_journal.unlink()
-                    self.logger.debug(f"已删除session-journal文件: {session_journal}")
-                except Exception as e:
-                    self.logger.debug(f"删除session-journal文件失败: {e}")
-            
+
+            # 必须先断开再删 session，否则 SQLite 还被占用，文件删不掉
+            await self._disconnect_client(account.client)
+            account.client = None
+
+            self._delete_session_files(account.config.session_name)
+
             del self.accounts[account_id]
-            
             self._save_accounts()
-            
+
             if self.current_account_id == account_id:
                 self.current_account_id = next(iter(self.accounts.keys()), None)
-            
+
+            try:
+                from core.account_health_store import AccountHealthStore
+                AccountHealthStore().clear(account_id)
+            except Exception as e:
+                self.logger.debug(f"清理账号健康记录失败: {e}")
+
             self.logger.info(f"✅ 账号 {account_id} 及相关文件已完全移除")
             return True
         except Exception as e:

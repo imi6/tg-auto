@@ -29,6 +29,7 @@ from core.join_task_manager import JoinTaskManager
 from core.profile_task_manager import ProfileTaskManager
 from core.group_library_store import GroupLibraryStore
 from core.account_health_store import AccountHealthStore
+from core.message_template_store import MessageTemplateStore
 from core.proxy_manager import ProxyManager
 from core.send_record_store import SendRecordStore
 from utils.session_meta import parse_session_metadata
@@ -184,6 +185,11 @@ class GroupLibraryDeleteRequest(BaseModel):
     entry_ids: List[str]
 
 
+class MessageTemplateRequest(BaseModel):
+    title: str = ""
+    content: str = ""
+
+
 class ProfileUpdateRequest(BaseModel):
     # 留 None 表示该字段不修改，空字符串表示清空
     username: Optional[str] = None
@@ -224,6 +230,7 @@ class WebApp:
         self.join_task_manager = JoinTaskManager()
         self.profile_task_manager = ProfileTaskManager()
         self.group_library = GroupLibraryStore()
+        self.message_templates = MessageTemplateStore()
         self.health_service = HealthService()
         self.health_store = AccountHealthStore()
         self.precheck_service = PrecheckService()
@@ -1266,11 +1273,15 @@ class WebApp:
         async def delete_account(request: Request, account_id: str):
             user = self.get_current_user(request)
             try:
-                success = self.account_manager.remove_account(account_id)
+                success = await self.account_manager.remove_account(account_id)
                 if success:
                     self.monitor_engine.remove_all_monitors(account_id)
+                    paused = self.monitor_engine.pause_account_scheduled_messages(account_id)
                     await self.broadcast_status_update()
-                    return {"success": True, "message": "账号删除成功"}
+                    message = "账号删除成功"
+                    if paused:
+                        message += f"，已暂停该账号的 {paused} 条定时消息"
+                    return {"success": True, "message": message}
                 else:
                     return {"success": False, "message": "账号不存在"}
             except Exception as e:
@@ -2403,6 +2414,44 @@ class WebApp:
             
             return {"success": True, "message": "任务记录已删除"}
         
+        @self.app.get("/api/message-templates")
+        async def list_message_templates(request: Request, keyword: str = ""):
+            user = self.get_current_user(request)
+            templates = self.message_templates.list_templates(keyword=keyword)
+            return {"success": True, "templates": templates, "total": len(templates)}
+        
+        @self.app.post("/api/message-templates")
+        async def create_message_template(request: Request, template_request: MessageTemplateRequest):
+            user = self.get_current_user(request)
+            try:
+                template = self.message_templates.add(template_request.title, template_request.content)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            return {"success": True, "template": template, "message": "模板已保存"}
+        
+        @self.app.put("/api/message-templates/{template_id}")
+        async def update_message_template(request: Request, template_id: str,
+                                          template_request: MessageTemplateRequest):
+            user = self.get_current_user(request)
+            try:
+                template = self.message_templates.update(
+                    template_id,
+                    title=template_request.title,
+                    content=template_request.content
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if not template:
+                raise HTTPException(status_code=404, detail="模板不存在")
+            return {"success": True, "template": template, "message": "模板已更新"}
+        
+        @self.app.delete("/api/message-templates/{template_id}")
+        async def delete_message_template(request: Request, template_id: str):
+            user = self.get_current_user(request)
+            if not self.message_templates.delete(template_id):
+                raise HTTPException(status_code=404, detail="模板不存在")
+            return {"success": True, "message": "模板已删除"}
+        
         @self.app.post("/api/scheduled-messages")
         async def create_scheduled_message(request: Request, message: Dict[str, Any]):
             user = self.get_current_user(request)
@@ -2473,6 +2522,10 @@ class WebApp:
                     ai_prompt=message.get("ai_prompt"),
                     precheck=bool(message.get("precheck", True))
                 ))
+                
+                template_id = message.get("template_id")
+                if template_id:
+                    self.message_templates.mark_used(str(template_id))
                 
                 return {
                     "success": True,

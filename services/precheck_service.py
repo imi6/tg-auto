@@ -16,6 +16,7 @@ CODE_MUTED_ALL = 'muted_all'
 CODE_ADMIN_ONLY = 'admin_only'
 CODE_RESTRICTED = 'restricted'
 CODE_LEFT = 'left'
+CODE_FORUM = 'forum'
 CODE_NOT_FOUND = 'not_found'
 CODE_FLOOD = 'flood'
 CODE_UNKNOWN = 'unknown'
@@ -26,6 +27,7 @@ CODE_TEXT = {
     CODE_ADMIN_ONLY: '仅管理员可发言',
     CODE_RESTRICTED: '当前账号被禁言',
     CODE_LEFT: '已退出或被移出',
+    CODE_FORUM: '话题群，无法直接发送',
     CODE_NOT_FOUND: '找不到该目标',
     CODE_FLOOD: '触发限流，未能检查',
     CODE_UNKNOWN: '状态未知',
@@ -98,6 +100,10 @@ class PrecheckService:
                 can_post = is_creator or bool(admin_rights and getattr(admin_rights, 'post_messages', False))
                 return cls._result(CODE_OK, title) if can_post else cls._result(CODE_ADMIN_ONLY, title)
 
+            # 开启话题的超级群不能往群根节点发普通消息，Telegram 会回 cannot send plain results
+            if getattr(entity, 'forum', False):
+                return cls._result(CODE_FORUM, title, '该群开启了话题，不能直接往群里发普通消息')
+
             if not (is_creator or admin_rights) and cls._muted(getattr(entity, 'default_banned_rights', None)):
                 return cls._result(CODE_MUTED_ALL, title)
 
@@ -122,7 +128,9 @@ class PrecheckService:
             result = self._result(CODE_NOT_FOUND, '', f"无法解析目标: {e}")
         except Exception as e:
             reason = str(e) or e.__class__.__name__
-            if 'private' in reason.lower():
+            name = e.__class__.__name__
+            lowered = reason.lower()
+            if name in ('ChannelPrivateError', 'ChatForbiddenError') or 'channel_private' in lowered or 'private' in lowered:
                 result = self._result(CODE_LEFT, '', '目标为私有群组且当前账号不在其中')
             else:
                 self.logger.debug(f"预检目标 {target} 失败: {reason}")

@@ -1054,6 +1054,25 @@ class MonitorEngine(metaclass=Singleton):
         text = str(error).upper()
         return 'PEER_FLOOD' in text or 'USER_RESTRICTED' in text or 'INPUT_USER_DEACTIVATED' in text
 
+    @staticmethod
+    def _is_unsendable_error(error: Exception) -> Optional[str]:
+        """单个群发不出去，换下一个目标即可，不必记成整轮失败"""
+        name = error.__class__.__name__
+        text = (str(error) or '').lower()
+
+        if name in ('ChatWriteForbiddenError', 'UserBannedInChannelError', 'ChatGuestSendForbiddenError'):
+            return '当前账号无权在该群发言'
+        if name in ('ChannelPrivateError', 'ChatForbiddenError'):
+            return '目标为私有群组且当前账号不在其中'
+        if 'cannot send plain results' in text:
+            return '该群开启了话题，不能直接往群里发普通消息'
+        if 'channel_private' in text or 'chat_forbidden' in text:
+            return '目标为私有群组且当前账号不在其中'
+        if 'chat_write_forbidden' in text or "can't write in this chat" in text:
+            return '当前账号无权在该群发言'
+
+        return None
+
     async def _broadcast_to_targets(self, job_id: str, message_config: dict, account,
                                     targets: List[int], message_text: str) -> dict:
         """依次把消息发往所有目标，返回本轮汇总
@@ -1121,6 +1140,12 @@ class MonitorEngine(metaclass=Singleton):
                         send_error = retry_error
 
                 reason = str(send_error) or send_error.__class__.__name__
+
+                skip_reason = self._is_unsendable_error(send_error)
+                if skip_reason:
+                    self.logger.info(f"⏭️ 跳过目标 {target_id}: {skip_reason}")
+                    self._collect_skip(summary, target_id, skip_reason)
+                    continue
 
                 if self._is_spamblock_error(send_error):
                     # 账号级风控，继续发只会加重处罚，立刻标记并中止本轮
@@ -1391,6 +1416,32 @@ class MonitorEngine(metaclass=Singleton):
                 self._save_scheduled_messages()
             except Exception as record_error:
                 self.logger.error(f"记录发送结果失败: {record_error}")
+
+    def pause_account_scheduled_messages(self, account_id: str) -> int:
+        """账号删除后停掉它名下的定时消息，避免下一轮还去找这个号"""
+        paused = 0
+        for message in self.scheduled_messages:
+            if message.get('account_id') != account_id or not message.get('active', True):
+                continue
+
+            message['active'] = False
+            job_id = message.get('job_id')
+            if self.scheduler and self.scheduler.running and job_id:
+                try:
+                    self.scheduler.pause_job(job_id)
+                except Exception:
+                    try:
+                        self.scheduler.remove_job(job_id)
+                    except Exception as e:
+                        self.logger.debug(f"暂停已删账号的定时任务失败 {job_id}: {e}")
+
+            paused += 1
+
+        if paused:
+            self._save_scheduled_messages()
+            self.logger.info(f"账号 {account_id} 已删除，暂停了 {paused} 条定时消息")
+
+        return paused
 
     def remove_scheduled_message(self, job_id: str):
         try:

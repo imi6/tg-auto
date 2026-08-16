@@ -12,12 +12,14 @@ from .join_task_manager import JoinTaskManager
 from .profile_task_manager import ProfileTaskManager
 from .group_library_store import GroupLibraryStore
 from .account_health_store import AccountHealthStore
+from .message_template_store import MessageTemplateStore
 
 __all__ = [
     'ProxyManager',
     'SendRecordStore',
     'GroupLibraryStore',
     'AccountHealthStore',
+    'MessageTemplateStore',
     'AccountManager',
     'MonitorEngine',
     'BatchTaskManager',
