@@ -2632,7 +2632,7 @@ class WebApp:
                         
                         self.logger.info(f"📝 更新定时消息执行次数限制: {max_executions or '无限制'}")
                         
-                        new_cron = data.get('schedule', data.get('cron', old_cron))
+                        new_cron = data.get('schedule', data.get('cron', msg.get('cron') or msg.get('schedule')))
                         schedule_mode = data.get('schedule_mode', msg.get('schedule_mode', 'cron'))
                         engine.scheduled_messages[i].update({
                             'account_id': data.get('account_id'),
