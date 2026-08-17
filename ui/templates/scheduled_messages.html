@@ -1343,7 +1343,7 @@
                     </div>
                     ${record.error ? `
                         <div class="record-error">
-                            ${record.stage ? `[${STAGE_LABEL[record.stage] || record.stage}] ` : ''}${escapeHtml(record.error)}
+                            ${record.stage ? `[${STAGE_LABEL[record.stage] || record.stage}] ` : ''}${escapeHtml(localizeError(record.error))}
                         </div>
                     ` : ''}
                     ${renderFailureList(record)}
@@ -1359,10 +1359,20 @@
         let text = `${targets.total} 个目标：成功 ${targets.success}`;
         if (targets.failed) text += `，失败 ${targets.failed}`;
         if (targets.skipped) text += `，预检跳过 ${targets.skipped}`;
+        if (targets.removed) text += `，已剔除 ${targets.removed}`;
         if (targets.account_limited) text += '（账号触发风控）';
         else if (targets.stopped) text += '（中途停止）';
 
         return text;
+    }
+
+    function localizeError(text) {
+        const raw = String(text || '');
+        if (/cannot send plain results/i.test(raw)) {
+            return raw.replace(/You cannot send plain results in this chat \(caused by SendMessageRequest\)/i,
+                               '该群开启了话题，不能直接往群里发普通消息');
+        }
+        return raw;
     }
 
     function renderFailureList(record) {
@@ -1376,7 +1386,7 @@
         if (items.length < 2) return '';
 
         const rows = items
-            .map(item => `<div>${escapeHtml(item.target_id)}: ${escapeHtml(item.error)}</div>`)
+            .map(item => `<div>${escapeHtml(item.target_id)}: ${escapeHtml(localizeError(item.error))}</div>`)
             .join('');
         const omitted = (total || items.length) - items.length;
 
@@ -1450,7 +1460,7 @@
         };
         const status = msg.last_status || 'success';
         const time = String(msg.last_run_at).replace('T', ' ').slice(5, 16);
-        const title = msg.last_error ? escapeHtml(msg.last_error) : '';
+        const title = msg.last_error ? escapeHtml(localizeError(msg.last_error)) : '';
 
         return `<span class="last-run ${status}" title="${title}">
             <i class="bi ${icons[status] || 'bi-info-circle'}"></i>
@@ -1836,6 +1846,11 @@
                     <div class="message-target" style="flex: 1;">
                         <i class="bi bi-send"></i>
                         <span title="${escapeHtml(getMessageTargets(msg).join('\n'))}">目标: ${formatTargets(msg)}</span>
+                        ${(msg.excluded_targets || []).length ? `
+                            <span style="margin-left: 10px; color: var(--text-muted);" title="发不出去的目标已自动剔除">
+                                已剔除 ${(msg.excluded_targets || []).length} 个
+                            </span>
+                        ` : ''}
                         ${msg.max_executions ? `
                             <span style="margin-left: 15px;">
                                 <i class="bi bi-arrow-repeat"></i>
@@ -2388,6 +2403,16 @@
                     <p><strong>状态:</strong> ${msg.active !== false ? '运行中' : '已暂停'}</p>
                     <p><strong>账号:</strong> ${accountLabel(msg.account_id)}</p>
                     <p><strong>目标频道/群组:</strong> ${formatTargets(msg)}</p>
+                    ${(msg.excluded_targets || []).length ? `
+                        <details style="margin: -8px 0 12px 0;">
+                            <summary style="cursor: pointer; color: var(--text-muted);">已剔除 ${(msg.excluded_targets || []).length} 个发不出去的目标</summary>
+                            <div style="max-height: 160px; overflow-y: auto; font-size: 12px; padding: 6px 0;">
+                                ${(msg.excluded_targets || []).map(item =>
+                                    `${escapeHtml(item.target_id)}: ${escapeHtml(localizeError(item.error))}`
+                                ).join('<br>')}
+                            </div>
+                        </details>
+                    ` : ''}
                     ${getMessageTargets(msg).length > 1 ? `
                         <details style="margin: -8px 0 12px 0;">
                             <summary style="cursor: pointer; color: var(--primary-color);">查看全部目标 ID</summary>

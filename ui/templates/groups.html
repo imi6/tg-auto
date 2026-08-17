@@ -787,6 +787,8 @@
                             <option value="">全部标签</option>
                         </select>
                     </div>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleJoinLibraryPick(true)">全选</button>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleJoinLibraryPick(false)">全不选</button>
                     <button class="btn btn-secondary btn-sm" onclick="addLibraryPickToTargets()">
                         <i class="bi bi-arrow-down"></i>
                         加入目标框
@@ -1180,6 +1182,12 @@
                 </label>
             `).join('')
             : '<div class="gm-hint">群组库为空，可以在「群组库」标签页里先添加</div>';
+    }
+
+    function toggleJoinLibraryPick(checked) {
+        document.querySelectorAll('.join-library-check').forEach(el => {
+            el.checked = checked;
+        });
     }
 
     function addLibraryPickToTargets() {

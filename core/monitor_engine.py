@@ -55,6 +55,62 @@ class MonitorEngine(metaclass=Singleton):
             except RuntimeError:
                 self.logger.debug("事件循环尚未启动，调度器将延后启动")
 
+    @staticmethod
+    def build_schedule_trigger(message_config: dict):
+        """按任务自己的模式生成触发器，间隔任务不能拿去当 Cron 解析"""
+        schedule_mode = message_config.get('schedule_mode', 'cron')
+        cron_expr = message_config.get('cron') or message_config.get('schedule') or ''
+        timezone = pytz.timezone('Asia/Shanghai')
+
+        if not cron_expr:
+            raise ValueError('定时规则为空')
+
+        parts = cron_expr.split()
+        # 间隔任务存的是「小时 分钟」两段数字；编辑时哪怕 schedule_mode 丢了也不能当 Cron 解析
+        use_interval = schedule_mode == 'interval' or (
+            len(parts) == 2 and parts[0].lstrip('-').isdigit() and parts[1].lstrip('-').isdigit()
+        )
+        if use_interval:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            if hours < 0 or minutes < 0 or (hours == 0 and minutes == 0):
+                raise ValueError(f'间隔时间无效: {cron_expr}')
+            return IntervalTrigger(hours=hours, minutes=minutes, timezone=timezone)
+
+        return CronTrigger.from_crontab(cron_expr, timezone=timezone)
+
+    def schedule_job(self, job_id: str, message_config: Optional[dict] = None) -> bool:
+        """把一条定时消息挂到调度器上，已存在则覆盖"""
+        self._ensure_scheduler_started()
+        if not self.scheduler or not self.scheduler.running:
+            self.logger.warning(f"调度器未启动，无法挂载任务: {job_id}")
+            return False
+
+        config = message_config
+        if config is None:
+            config = next((msg for msg in self.scheduled_messages if msg.get('job_id') == job_id), None)
+        if not config:
+            raise ValueError(f'未找到定时消息: {job_id}')
+
+        trigger = self.build_schedule_trigger(config)
+        self.scheduler.add_job(
+            self._execute_scheduled_message,
+            trigger,
+            id=job_id,
+            args=[job_id],
+            replace_existing=True
+        )
+        return True
+
+    def unschedule_job(self, job_id: str) -> bool:
+        if not self.scheduler or not self.scheduler.running:
+            return False
+        try:
+            self.scheduler.remove_job(job_id)
+            return True
+        except Exception:
+            return False
+
     def _restore_scheduled_jobs(self):
         if not self.scheduler or not self.scheduler.running:
             return
@@ -62,37 +118,16 @@ class MonitorEngine(metaclass=Singleton):
         restored_count = 0
         for message in self.scheduled_messages:
             job_id = message.get('job_id')
-            cron_expr = message.get('cron', message.get('schedule'))
-            active = message.get('active', True)
-            schedule_mode = message.get('schedule_mode', 'cron')
+            if not job_id or not message.get('active', True):
+                continue
+            if not (message.get('cron') or message.get('schedule')):
+                continue
 
-            if job_id and cron_expr and active:
-                try:
-                    if schedule_mode == 'interval':
-                        parts = cron_expr.split()
-                        hours = int(parts[0]) if len(parts) > 0 else 0
-                        minutes = int(parts[1]) if len(parts) > 1 else 0
-
-                        trigger = IntervalTrigger(
-                            hours=hours,
-                            minutes=minutes,
-                            timezone=pytz.timezone('Asia/Shanghai')
-                        )
-                        self.logger.debug(f"恢复间隔任务 {job_id}: {hours}小时 {minutes}分钟")
-                    else:
-                        trigger = CronTrigger.from_crontab(cron_expr, timezone=pytz.timezone('Asia/Shanghai'))
-                        self.logger.debug(f"恢复Cron任务 {job_id}: {cron_expr}")
-
-                    self.scheduler.add_job(
-                        self._execute_scheduled_message,
-                        trigger,
-                        id=job_id,
-                        args=[job_id],
-                        replace_existing=True
-                    )
-                    restored_count += 1
-                except Exception as scheduler_error:
-                    self.logger.error(f"恢复调度任务失败 {job_id}: {scheduler_error}")
+            try:
+                self.schedule_job(job_id, message)
+                restored_count += 1
+            except Exception as scheduler_error:
+                self.logger.error(f"恢复调度任务失败 {job_id}: {scheduler_error}")
 
         if restored_count > 0:
             self.logger.info(f"恢复 {restored_count} 个调度任务")
@@ -946,38 +981,11 @@ class MonitorEngine(metaclass=Singleton):
 
             self.logger.info(f"添加定时消息: {config.job_id}")
 
-            self._ensure_scheduler_started()
-
-            if self.scheduler and self.scheduler.running:
-                try:
-                    schedule_mode = getattr(config, 'schedule_mode', 'cron')
-                    if schedule_mode == 'interval':
-                        parts = config.cron.split()
-                        hours = int(parts[0]) if len(parts) > 0 else 0
-                        minutes = int(parts[1]) if len(parts) > 1 else 0
-
-                        trigger = IntervalTrigger(
-                            hours=hours,
-                            minutes=minutes,
-                            timezone=pytz.timezone('Asia/Shanghai')
-                        )
-                        self.logger.info(f"使用间隔触发器: {hours}小时 {minutes}分钟")
-                    else:
-                        trigger = CronTrigger.from_crontab(config.cron, timezone=pytz.timezone('Asia/Shanghai'))
-                        self.logger.info(f"使用Cron触发器: {config.cron}")
-
-                    self.scheduler.add_job(
-                        self._execute_scheduled_message,
-                        trigger,
-                        id=config.job_id,
-                        args=[config.job_id],
-                        replace_existing=True
-                    )
-                    self.logger.info(f"已启动定时任务: {config.job_id}")
-                except Exception as scheduler_error:
-                    self.logger.error(f"添加调度任务失败: {scheduler_error}")
-            else:
-                self.logger.warning(f"调度器未启动，定时消息任务将延后添加: {config.job_id}")
+            try:
+                self.schedule_job(config.job_id, message_dict)
+                self.logger.info(f"已启动定时任务: {config.job_id}")
+            except Exception as scheduler_error:
+                self.logger.error(f"添加调度任务失败: {scheduler_error}")
 
         except Exception as e:
             self.logger.error(f"添加定时消息失败: {e}")
@@ -1072,6 +1080,72 @@ class MonitorEngine(metaclass=Singleton):
             return '当前账号无权在该群发言'
 
         return None
+
+    # 这些情况短期内不会自己变好，继续留在任务里只会每轮都占一条跳过
+    _PERMANENT_SKIP_HINTS = (
+        '全员禁言',
+        '当前账号在该群被禁言',
+        '已退出',
+        '被移出',
+        '私有群组',
+        '话题',
+        '仅管理员',
+        '找不到该目标',
+        '无权在该群发言',
+        'cannot send plain results',
+    )
+
+    @classmethod
+    def _is_permanent_skip(cls, reason: str) -> bool:
+        text = reason or ''
+        lowered = text.lower()
+        return any(hint.lower() in lowered or hint in text for hint in cls._PERMANENT_SKIP_HINTS)
+
+    def _prune_unsendable_targets(self, message_config: dict, summary: dict) -> List[dict]:
+        """把确定发不出去的目标从任务里摘掉，下一轮不再重复预检"""
+        drop = {}
+        for item in (summary.get('skips') or []) + (summary.get('failures') or []):
+            target_id = item.get('target_id')
+            reason = item.get('error') or ''
+            if target_id in (None, '') or not self._is_permanent_skip(reason):
+                continue
+            try:
+                drop[int(target_id)] = reason
+            except (TypeError, ValueError):
+                continue
+
+        if not drop:
+            return []
+
+        targets = self.get_message_targets(message_config)
+        kept = [target for target in targets if target not in drop]
+        removed = [
+            {'target_id': target, 'error': drop[target]}
+            for target in targets if target in drop
+        ]
+
+        message_config['target_ids'] = kept
+        if kept:
+            message_config['target_id'] = kept[0]
+            message_config['channel_id'] = kept[0]
+
+        excluded = message_config.setdefault('excluded_targets', [])
+        existing = set()
+        for item in excluded:
+            try:
+                existing.add(int(item.get('target_id')))
+            except (TypeError, ValueError):
+                continue
+
+        now = datetime.now().isoformat(timespec='seconds')
+        for item in removed:
+            if item['target_id'] in existing:
+                continue
+            excluded.append({**item, 'removed_at': now})
+
+        summary['removed'] = len(removed)
+        summary['removed_targets'] = removed
+        return removed
 
     async def _broadcast_to_targets(self, job_id: str, message_config: dict, account,
                                     targets: List[int], message_text: str) -> dict:
@@ -1340,6 +1414,12 @@ class MonitorEngine(metaclass=Singleton):
             finally:
                 self._running_scheduled_jobs.discard(job_id)
 
+            removed = self._prune_unsendable_targets(message_config, summary)
+            if removed:
+                self.logger.info(
+                    f"已从任务 {job_id} 剔除 {len(removed)} 个发不出去的目标，剩余 {len(self.get_message_targets(message_config))} 个"
+                )
+
             if summary['success'] == 0:
                 # 一条都没发出去：全被预检拦下算跳过，真发失败才算失败
                 all_skipped = summary['failed'] == 0 and summary.get('skipped')
@@ -1365,6 +1445,9 @@ class MonitorEngine(metaclass=Singleton):
             reason = self._summarize_failures(summary)
             if skipped and not reason:
                 reason = f"{skipped} 个目标预检未通过，已跳过"
+            if removed:
+                extra = f"已从任务中剔除 {len(removed)} 个无效目标"
+                reason = f"{reason}；{extra}" if reason else extra
 
             self._record_send_result(
                 message_config, job_id, 'partial' if partial else 'success', message=message_text,

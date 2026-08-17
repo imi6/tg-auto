@@ -13,8 +13,6 @@ from typing import Dict, List, Any, Optional, Union
 from pathlib import Path, PurePosixPath
 from datetime import datetime
 import io
-from apscheduler.triggers.cron import CronTrigger
-
 from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Request, Form, HTTPException, Depends,
                      Cookie, UploadFile, File)
 from fastapi.staticfiles import StaticFiles
@@ -2621,9 +2619,6 @@ class WebApp:
                 
                 for i, msg in enumerate(engine.scheduled_messages):
                     if msg.get('job_id') == job_id:
-                        old_cron = msg.get('cron') or msg.get('schedule')
-                        old_active = msg.get('active', True)
-                        
                         max_executions = data.get("max_executions")
                         if max_executions == "" or max_executions is None or max_executions == 0:
                             max_executions = None
@@ -2638,16 +2633,22 @@ class WebApp:
                         self.logger.info(f"📝 更新定时消息执行次数限制: {max_executions or '无限制'}")
                         
                         new_cron = data.get('schedule', data.get('cron', old_cron))
+                        schedule_mode = data.get('schedule_mode', msg.get('schedule_mode', 'cron'))
                         engine.scheduled_messages[i].update({
                             'account_id': data.get('account_id'),
                             'message': data.get('message', ''),
                             'channel_id': target_ids[0],
                             'target_id': target_ids[0],
                             'target_ids': target_ids,
+                            'excluded_targets': [
+                                item for item in (msg.get('excluded_targets') or [])
+                                if item.get('target_id') not in target_ids
+                            ],
                             'send_interval': self.parse_send_interval(data),
                             'precheck': bool(data.get('precheck', True)),
                             'schedule': new_cron,
                             'cron': new_cron,
+                            'schedule_mode': schedule_mode,
                             'use_ai': data.get('use_ai', False),
                             'ai_prompt': data.get('ai_prompt', ''),
                             'random_delay': data.get('random_delay', 0),
@@ -2657,30 +2658,21 @@ class WebApp:
                             'max_executions': max_executions
                         })
                         
-                        self.logger.info(f"📝 定时消息更新: {job_id}, 执行限制: {max_executions or '无限制'}, Cron: {new_cron}")
+                        updated = engine.scheduled_messages[i]
+                        self.logger.info(
+                            f"📝 定时消息更新: {job_id}, 执行限制: {max_executions or '无限制'}, "
+                            f"模式: {schedule_mode}, 规则: {new_cron}"
+                        )
                         
-                        if old_cron != new_cron or old_active:
-                            engine._ensure_scheduler_started()
-                            
-                            if engine.scheduler and engine.scheduler.running:
-                                try:
-                                    engine.scheduler.remove_job(job_id)
-                                    self.logger.info(f"移除旧的定时任务: {job_id}")
-                                except Exception as remove_error:
-                                    self.logger.info(f"移除旧任务失败（可能不存在）: {remove_error}")
-                                
-                                if msg.get('active', True) and new_cron:
-                                    try:
-                                        engine.scheduler.add_job(
-                                            engine._execute_scheduled_message,
-                                            CronTrigger.from_crontab(new_cron, timezone=pytz.timezone('Asia/Shanghai')),
-                                            id=job_id,
-                                            args=[job_id],
-                                            replace_existing=True
-                                        )
-                                        self.logger.info(f"更新定时任务: {job_id}, 新Cron: {new_cron}")
-                                    except Exception as add_error:
-                                        self.logger.error(f"重新添加定时任务失败: {add_error}")
+                        if updated.get('active', True) and new_cron:
+                            try:
+                                engine.schedule_job(job_id, updated)
+                                self.logger.info(f"已按 {schedule_mode} 重新挂载定时任务: {job_id}")
+                            except Exception as add_error:
+                                self.logger.error(f"重新添加定时任务失败: {add_error}")
+                                raise HTTPException(status_code=400, detail=f"定时规则无效，任务未挂上调度器: {add_error}")
+                        else:
+                            engine.unschedule_job(job_id)
                         
                         engine._save_scheduled_messages()
                         
@@ -2718,46 +2710,18 @@ class WebApp:
                                 msg['execution_count'] = 0
                                 self.logger.info(f"重新启动定时任务，执行计数已重置: {job_id}")
                             
-                            cron_expr = msg.get('cron', msg.get('schedule'))
-                            schedule_mode = msg.get('schedule_mode', 'cron')
-                            
-                            if cron_expr and engine.scheduler and engine.scheduler.running:
+                            if msg.get('cron') or msg.get('schedule'):
                                 try:
-                                    if schedule_mode == 'interval':
-                                        parts = cron_expr.split()
-                                        hours = int(parts[0]) if len(parts) > 0 else 0
-                                        minutes = int(parts[1]) if len(parts) > 1 else 0
-                                        
-                                        from apscheduler.triggers.interval import IntervalTrigger
-                                        trigger = IntervalTrigger(
-                                            hours=hours,
-                                            minutes=minutes,
-                                            timezone=pytz.timezone('Asia/Shanghai')
-                                        )
-                                        self.logger.info(f"使用间隔触发器重新启动: {hours}小时 {minutes}分钟")
-                                    else:
-                                        trigger = CronTrigger.from_crontab(cron_expr, timezone=pytz.timezone('Asia/Shanghai'))
-                                        self.logger.info(f"使用Cron触发器重新启动: {cron_expr}")
-                                    
-                                    engine.scheduler.add_job(
-                                        engine._execute_scheduled_message,
-                                        trigger,
-                                        id=job_id,
-                                        args=[job_id],
-                                        replace_existing=True
-                                    )
+                                    engine.schedule_job(job_id, msg)
                                     self.logger.info(f"成功重新启动定时任务: {job_id}")
                                 except Exception as scheduler_error:
                                     self.logger.error(f"启动定时任务失败: {scheduler_error}")
+                                    raise HTTPException(status_code=400, detail=f"定时规则无效: {scheduler_error}")
                         else:
-                            if engine.scheduler and engine.scheduler.running:
-                                try:
-                                    engine.scheduler.remove_job(job_id)
-                                    self.logger.info(f"暂停定时任务: {job_id}")
-                                except Exception as scheduler_error:
-                                    self.logger.warning(f"暂停定时任务失败: {scheduler_error}")
+                            if engine.unschedule_job(job_id):
+                                self.logger.info(f"暂停定时任务: {job_id}")
                             else:
-                                self.logger.debug(f"调度器未运行，跳过暂停任务: {job_id}")
+                                self.logger.debug(f"调度器中没有该任务，已按暂停保存: {job_id}")
                         
                         engine._save_scheduled_messages()
                         return {
@@ -2768,6 +2732,8 @@ class WebApp:
                 
                 return {"success": False, "message": "未找到指定的定时消息"}
                 
+            except HTTPException:
+                raise
             except Exception as e:
                 self.logger.error(f"切换定时消息状态失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
