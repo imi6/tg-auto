@@ -2689,6 +2689,19 @@ class WebApp:
                 self.logger.error(f"更新定时消息失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
+        @self.app.post("/api/scheduled-messages/{job_id}/run")
+        async def run_scheduled_message_now(request: Request, job_id: str):
+            user = self.get_current_user(request)
+            engine = MonitorEngine()
+            message = next((msg for msg in engine.scheduled_messages if msg.get('job_id') == job_id), None)
+            if not message:
+                raise HTTPException(status_code=404, detail="未找到指定的定时消息")
+            if job_id in engine._running_scheduled_jobs:
+                return {"success": False, "message": "上一轮还在发送，请稍后再试"}
+
+            asyncio.create_task(engine.run_scheduled_message_now(job_id))
+            return {"success": True, "message": "已开始立即发送，完成后可在发送记录里查看"}
+        
         @self.app.put("/api/scheduled-messages/{job_id}/toggle")
         async def toggle_scheduled_message(request: Request, job_id: str):
             user = self.get_current_user(request)

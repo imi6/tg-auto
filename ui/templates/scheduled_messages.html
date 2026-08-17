@@ -1859,6 +1859,9 @@
                         ` : ''}
                     </div>
                     <div class="message-actions" style="display: flex; gap: 8px;">
+                        <button class="btn btn-sm btn-primary" onclick="runMessageNow('${msg.job_id || msg.id}', this); event.stopPropagation();" title="立即发送一轮，方便测试">
+                            <i class="bi bi-send"></i>
+                        </button>
                         <button class="btn btn-sm ${msg.active !== false ? 'btn-warning' : 'btn-success'}" onclick="toggleMessageStatus('${msg.job_id || msg.id}'); event.stopPropagation();" title="${msg.active !== false ? '暂停' : '启动'}">
                             <i class="bi bi-${msg.active !== false ? 'pause' : 'play'}"></i>
                         </button>
@@ -2295,6 +2298,38 @@
         }, 3000);
     }
     
+    async function runMessageNow(id, button) {
+        if (!id || id === 'undefined' || id === 'null') return;
+
+        const original = button ? button.innerHTML : '';
+        if (button) {
+            button.disabled = true;
+            button.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+        }
+
+        try {
+            const response = await fetch(`/api/scheduled-messages/${encodeURIComponent(id)}/run`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+            if (!data.success) {
+                showNotification(data.message || data.detail || '发送失败', 'error');
+                return;
+            }
+
+            showNotification(data.message, 'success');
+            setTimeout(loadMessages, 3000);
+        } catch (error) {
+            console.error('立即发送失败:', error);
+            showNotification('立即发送失败', 'error');
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.innerHTML = original;
+            }
+        }
+    }
+
     async function toggleMessageStatus(id) {
         if (!id || id === 'undefined' || id === 'null') {
             console.error('切换状态: ID无效', id);

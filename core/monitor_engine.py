@@ -1253,6 +1253,21 @@ class MonitorEngine(metaclass=Singleton):
         if len(summary['skips']) < 50:
             summary['skips'].append({'target_id': target_id, 'error': reason})
 
+    async def run_scheduled_message_now(self, job_id: str):
+        """立刻执行一轮，不走 Cron / 间隔，也不算进执行次数，方便测试"""
+        message_config = next((msg for msg in self.scheduled_messages if msg.get('job_id') == job_id), None)
+        if not message_config:
+            raise ValueError('未找到定时消息')
+        if job_id in self._running_scheduled_jobs:
+            raise RuntimeError('上一轮群发尚未结束')
+
+        message_config['_run_now'] = True
+        try:
+            self.logger.info(f"立即发送定时消息: {job_id}")
+            await self._execute_scheduled_message(job_id)
+        finally:
+            message_config.pop('_run_now', None)
+
     async def _execute_scheduled_message(self, job_id: str):
         message_config = None
         try:
@@ -1266,7 +1281,9 @@ class MonitorEngine(metaclass=Singleton):
                 self._record_send_result(None, job_id, 'failed', error="未找到定时消息配置", stage='config')
                 return
 
-            if not message_config.get('active', True):
+            run_now = bool(message_config.get('_run_now'))
+
+            if not message_config.get('active', True) and not run_now:
                 self.logger.debug(f"定时消息已暂停，跳过执行: {job_id}")
                 return
 
@@ -1283,7 +1300,7 @@ class MonitorEngine(metaclass=Singleton):
             max_executions = message_config.get('max_executions')
             execution_count = message_config.get('execution_count', 0)
 
-            if max_executions and execution_count >= max_executions:
+            if max_executions and execution_count >= max_executions and not run_now:
                 self.logger.info(f"定时消息达到执行次数限制，停止执行: {job_id}")
                 try:
                     self.scheduler.remove_job(job_id)
@@ -1399,7 +1416,7 @@ class MonitorEngine(metaclass=Singleton):
                 self._save_scheduled_messages()
                 return
 
-            random_delay = message_config.get('random_delay', message_config.get('random_offset', 0))
+            random_delay = 0 if run_now else message_config.get('random_delay', message_config.get('random_offset', 0))
             if random_delay > 0:
                 import random  # NOSONAR - 用于模拟人类发送延迟，不需要密码学安全性
                 actual_delay = random.randint(0, random_delay)  # NOSONAR
@@ -1436,7 +1453,8 @@ class MonitorEngine(metaclass=Singleton):
                 return
 
             old_count = execution_count
-            message_config['execution_count'] = execution_count + 1
+            if not run_now:
+                message_config['execution_count'] = execution_count + 1
             new_count = message_config['execution_count']
             max_executions = message_config.get('max_executions')
 
@@ -1557,8 +1575,14 @@ class MonitorEngine(metaclass=Singleton):
         try:
             self.scheduled_messages_file.parent.mkdir(parents=True, exist_ok=True)
 
+            payload = []
+            for message in self.scheduled_messages:
+                item = dict(message)
+                item.pop('_run_now', None)
+                payload.append(item)
+
             with open(self.scheduled_messages_file, 'w', encoding='utf-8') as f:
-                json.dump(self.scheduled_messages, f, indent=2, ensure_ascii=False)
+                json.dump(payload, f, indent=2, ensure_ascii=False)
 
             self.logger.info(f"已保存 {len(self.scheduled_messages)} 条定时消息")
 
