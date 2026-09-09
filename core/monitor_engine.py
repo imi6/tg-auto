@@ -27,6 +27,8 @@ class MonitorEngine(metaclass=Singleton):
         self.processed_messages: Set[str] = set()
         self.scheduled_messages: List[Dict] = []
         self._running_scheduled_jobs: Set[str] = set()
+        self._send_progress: Dict[str, Dict] = {}
+        self._progress_listeners: List = []
         self.logger = get_logger(__name__)
         self.monitors_file = Path("data/monitor_configs.json")
         self.scheduled_messages_file = Path("data/scheduled_messages.json")
@@ -101,6 +103,51 @@ class MonitorEngine(metaclass=Singleton):
             replace_existing=True
         )
         return True
+
+    def get_next_run_at(self, job_id: str) -> Optional[str]:
+        if not self.scheduler or not job_id:
+            return None
+        try:
+            job = self.scheduler.get_job(job_id)
+            if job and job.next_run_time:
+                return job.next_run_time.astimezone().isoformat(timespec='seconds')
+        except Exception:
+            return None
+        return None
+
+    def add_progress_listener(self, callback):
+        if callback not in self._progress_listeners:
+            self._progress_listeners.append(callback)
+
+    def get_send_progress(self, job_id: Optional[str] = None):
+        if job_id:
+            progress = self._send_progress.get(job_id)
+            return dict(progress) if progress else None
+        return {key: dict(value) for key, value in self._send_progress.items()}
+
+    def _publish_progress(self, job_id: str, **fields):
+        progress = self._send_progress.setdefault(job_id, {'job_id': job_id})
+        progress.update(fields)
+        progress['job_id'] = job_id
+        progress['updated_at'] = datetime.now().isoformat(timespec='seconds')
+        snapshot = dict(progress)
+        for listener in list(self._progress_listeners):
+            try:
+                result = listener(snapshot)
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(result)
+            except Exception as e:
+                self.logger.debug(f"发送进度回调失败: {e}")
+        return snapshot
+
+    @staticmethod
+    def default_job_name(message: str = '', use_ai: bool = False, ai_prompt: str = '') -> str:
+        text = ' '.join((message or '').split())
+        if not text and use_ai:
+            text = ' '.join((ai_prompt or '').split()) or 'AI生成消息'
+        if not text:
+            return '定时消息'
+        return text if len(text) <= 24 else text[:24] + '…'
 
     def unschedule_job(self, job_id: str) -> bool:
         if not self.scheduler or not self.scheduler.running:
@@ -972,7 +1019,11 @@ class MonitorEngine(metaclass=Singleton):
                 'use_ai': getattr(config, 'use_ai', False),
                 'ai_prompt': getattr(config, 'ai_prompt', None),
                 'ai_model': getattr(config, 'ai_model', 'gpt-4o'),
-                'schedule_mode': getattr(config, 'schedule_mode', 'cron')
+                'schedule_mode': getattr(config, 'schedule_mode', 'cron'),
+                'name': (getattr(config, 'name', '') or '').strip() or self.default_job_name(
+                    config.message, getattr(config, 'use_ai', False), getattr(config, 'ai_prompt', '') or ''
+                ),
+                'target_titles': {},
             }
 
             self.scheduled_messages.append(message_dict)
@@ -991,7 +1042,21 @@ class MonitorEngine(metaclass=Singleton):
             self.logger.error(f"添加定时消息失败: {e}")
 
     def get_scheduled_messages(self):
-        return self.scheduled_messages
+        """返回带运行时信息的副本，避免把进度和下次触发时间写进 JSON"""
+        result = []
+        for message in self.scheduled_messages:
+            item = dict(message)
+            item.pop('_run_now', None)
+            job_id = item.get('job_id')
+            if not (item.get('name') or '').strip():
+                item['name'] = self.default_job_name(
+                    item.get('message', ''), item.get('use_ai', False), item.get('ai_prompt') or ''
+                )
+            item['next_run_at'] = self.get_next_run_at(job_id) if job_id else None
+            item['running'] = bool(job_id and job_id in self._running_scheduled_jobs)
+            item['progress'] = self.get_send_progress(job_id) if job_id else None
+            result.append(item)
+        return result
 
     @staticmethod
     def get_message_targets(message_config: dict) -> List[int]:
@@ -1046,7 +1111,8 @@ class MonitorEngine(metaclass=Singleton):
             return None
 
         first = failures[0]
-        text = f"{first['target_id']}: {first['error']}"
+        label = first.get('title') or first['target_id']
+        text = f"{label}: {first['error']}"
         if summary['failed'] > 1:
             text += f"（另有 {summary['failed'] - 1} 个目标失败）"
 
@@ -1120,7 +1186,11 @@ class MonitorEngine(metaclass=Singleton):
         targets = self.get_message_targets(message_config)
         kept = [target for target in targets if target not in drop]
         removed = [
-            {'target_id': target, 'error': drop[target]}
+            {
+                'target_id': target,
+                'error': drop[target],
+                **({'title': self._target_title(message_config, target)} if self._target_title(message_config, target) else {}),
+            }
             for target in targets if target in drop
         ]
 
@@ -1169,19 +1239,43 @@ class MonitorEngine(metaclass=Singleton):
                    'failures': [], 'skips': []}
         sent_any = False
 
+        def publish():
+            self._publish_progress(
+                job_id,
+                status='running',
+                total=summary['total'],
+                current=index + 1 if targets else 0,
+                success=summary['success'],
+                failed=summary['failed'],
+                skipped=summary['skipped'],
+                current_target=self._target_title(message_config, target_id) or str(target_id) if targets else '',
+                stopped=bool(summary.get('stopped')),
+            )
+
+        self._publish_progress(
+            job_id, status='running', total=len(targets), current=0,
+            success=0, failed=0, skipped=0, current_target=''
+        )
+
         for index, target_id in enumerate(targets):
             # 群发途中被暂停或删除时立即停手，避免继续骚扰剩余群组
-            if not message_config.get('active', True):
+            if not message_config.get('active', True) and not message_config.get('_run_now'):
                 self.logger.warning(f"定时消息在群发途中被暂停，剩余 {len(targets) - index} 个目标未发送: {job_id}")
                 summary['stopped'] = True
                 break
 
+            title = self._target_title(message_config, target_id)
+            publish()
+
             if precheck:
                 # 预检发不出去的目标直接跳过，省掉一次必然失败的发送请求
                 check = await precheck.check_target(account.client, target_id)
+                title = check.get('title') or title
+                self._remember_target_title(message_config, target_id, title)
                 if PrecheckService.is_blocking(check['code']):
-                    self.logger.info(f"⏭️ 跳过目标 {target_id}: {check['reason']}")
-                    self._collect_skip(summary, target_id, check['reason'])
+                    self.logger.info(f"⏭️ 跳过目标 {title or target_id}: {check['reason']}")
+                    self._collect_skip(summary, target_id, check['reason'], title)
+                    publish()
                     continue
 
             if sent_any and interval > 0:
@@ -1192,6 +1286,7 @@ class MonitorEngine(metaclass=Singleton):
                 await account.client.send_message(target_id, message_text)
                 summary['success'] += 1
                 sent_any = True
+                publish()
 
             except Exception as send_error:
                 wait_seconds = getattr(send_error, 'seconds', None)
@@ -1199,8 +1294,9 @@ class MonitorEngine(metaclass=Singleton):
                     # FloodWait：等满再重试一次，超过 5 分钟就放弃本轮，留到下次触发
                     if wait_seconds > 300:
                         self.logger.error(f"⛔ 触发限流需等待 {wait_seconds} 秒，中止本轮群发: {job_id}")
-                        self._collect_failure(summary, target_id, f"触发限流，需等待 {wait_seconds} 秒，已中止本轮")
+                        self._collect_failure(summary, target_id, f"触发限流，需等待 {wait_seconds} 秒，已中止本轮", title)
                         summary['stopped'] = True
+                        publish()
                         break
 
                     self.logger.warning(f"⏳ 触发限流，等待 {wait_seconds} 秒后重试目标 {target_id}")
@@ -1209,6 +1305,7 @@ class MonitorEngine(metaclass=Singleton):
                         await account.client.send_message(target_id, message_text)
                         summary['success'] += 1
                         sent_any = True
+                        publish()
                         continue
                     except Exception as retry_error:
                         send_error = retry_error
@@ -1217,8 +1314,9 @@ class MonitorEngine(metaclass=Singleton):
 
                 skip_reason = self._is_unsendable_error(send_error)
                 if skip_reason:
-                    self.logger.info(f"⏭️ 跳过目标 {target_id}: {skip_reason}")
-                    self._collect_skip(summary, target_id, skip_reason)
+                    self.logger.info(f"⏭️ 跳过目标 {title or target_id}: {skip_reason}")
+                    self._collect_skip(summary, target_id, skip_reason, title)
+                    publish()
                     continue
 
                 if self._is_spamblock_error(send_error):
@@ -1229,29 +1327,47 @@ class MonitorEngine(metaclass=Singleton):
                             account_id, f"群发时触发风控: {reason}", source='error'
                         )
                     self.logger.error(f"⛔ 账号 {account_id} 触发风控，中止本轮群发: {reason}")
-                    self._collect_failure(summary, target_id, f"账号触发风控: {reason}")
+                    self._collect_failure(summary, target_id, f"账号触发风控: {reason}", title)
                     summary['stopped'] = True
                     summary['account_limited'] = True
+                    publish()
                     break
 
-                self.logger.error(f"❌ 发送失败 {target_id}: {reason}")
-                self._collect_failure(summary, target_id, reason)
+                self.logger.error(f"❌ 发送失败 {title or target_id}: {reason}")
+                self._collect_failure(summary, target_id, reason, title)
+                publish()
 
         return summary
 
     @staticmethod
-    def _collect_failure(summary: dict, target_id: int, reason: str):
+    def _target_title(message_config: Optional[dict], target_id: int) -> str:
+        titles = (message_config or {}).get('target_titles') or {}
+        return titles.get(str(target_id)) or titles.get(target_id) or ''
+
+    @staticmethod
+    def _remember_target_title(message_config: dict, target_id: int, title: Optional[str]):
+        if not title:
+            return
+        titles = message_config.setdefault('target_titles', {})
+        titles[str(target_id)] = title
+
+    def _collect_failure(self, summary: dict, target_id: int, reason: str, title: str = ''):
         """累计失败数，明细只留前 50 条，避免上千目标撑爆记录文件"""
         summary['failed'] += 1
         if len(summary['failures']) < 50:
-            summary['failures'].append({'target_id': target_id, 'error': reason})
+            item = {'target_id': target_id, 'error': reason}
+            if title:
+                item['title'] = title
+            summary['failures'].append(item)
 
-    @staticmethod
-    def _collect_skip(summary: dict, target_id: int, reason: str):
+    def _collect_skip(self, summary: dict, target_id: int, reason: str, title: str = ''):
         """预检未通过的目标同样只留前 50 条明细"""
         summary['skipped'] += 1
         if len(summary['skips']) < 50:
-            summary['skips'].append({'target_id': target_id, 'error': reason})
+            item = {'target_id': target_id, 'error': reason}
+            if title:
+                item['title'] = title
+            summary['skips'].append(item)
 
     async def run_scheduled_message_now(self, job_id: str):
         """立刻执行一轮，不走 Cron / 间隔，也不算进执行次数，方便测试"""
@@ -1424,6 +1540,10 @@ class MonitorEngine(metaclass=Singleton):
                 await asyncio.sleep(actual_delay)
 
             self._running_scheduled_jobs.add(job_id)
+            self._publish_progress(
+                job_id, status='running', total=len(targets), current=0,
+                success=0, failed=0, skipped=0, current_target=''
+            )
             try:
                 summary = await self._broadcast_to_targets(
                     job_id, message_config, account, targets, message_text
@@ -1449,6 +1569,11 @@ class MonitorEngine(metaclass=Singleton):
                     message_config, job_id, status, message=message_text,
                     error=reason, stage='send', targets=summary
                 )
+                self._publish_progress(
+                    job_id, status=status, total=summary['total'],
+                    current=summary['total'], success=summary['success'],
+                    failed=summary['failed'], skipped=summary.get('skipped', 0)
+                )
                 self._save_scheduled_messages()
                 return
 
@@ -1467,10 +1592,16 @@ class MonitorEngine(metaclass=Singleton):
                 extra = f"已从任务中剔除 {len(removed)} 个无效目标"
                 reason = f"{reason}；{extra}" if reason else extra
 
+            final_status = 'partial' if partial else 'success'
             self._record_send_result(
-                message_config, job_id, 'partial' if partial else 'success', message=message_text,
+                message_config, job_id, final_status, message=message_text,
                 error=reason if partial else None,
                 stage='send' if partial else None, targets=summary
+            )
+            self._publish_progress(
+                job_id, status=final_status, total=summary['total'],
+                current=summary['total'], success=summary['success'],
+                failed=summary['failed'], skipped=skipped
             )
             
             self.logger.info(
@@ -1514,6 +1645,7 @@ class MonitorEngine(metaclass=Singleton):
             self.logger.error(f"执行定时消息失败 {job_id}: {e}")
             try:
                 self._record_send_result(message_config, job_id, 'failed', error=str(e), stage='unknown')
+                self._publish_progress(job_id, status='failed')
                 self._save_scheduled_messages()
             except Exception as record_error:
                 self.logger.error(f"记录发送结果失败: {record_error}")
@@ -1599,6 +1731,14 @@ class MonitorEngine(metaclass=Singleton):
                 data = json.load(f)
 
             self.scheduled_messages = data
+            for message in self.scheduled_messages:
+                if not (message.get('name') or '').strip():
+                    message['name'] = self.default_job_name(
+                        message.get('message', ''),
+                        message.get('use_ai', False),
+                        message.get('ai_prompt') or ''
+                    )
+                message.setdefault('target_titles', {})
             self.logger.info(f"已加载 {len(self.scheduled_messages)} 条定时消息")
 
         except Exception as e:

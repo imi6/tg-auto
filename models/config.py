@@ -172,6 +172,8 @@ class ScheduledMessageConfig:
     use_ai: bool = False
     ai_prompt: Optional[str] = None
     schedule_mode: str = "cron"
+    # 卡片上显示的短名称，空则用正文前几个字
+    name: str = ""
     # 一条任务可以发往多个目标，为空时退回到 target_id
     target_ids: List[int] = field(default_factory=list)
     # 群发时每个目标之间的间隔秒数，避免触发 Telegram 限流

@@ -1373,6 +1373,10 @@
                 if (typeof window.handleProfileTaskUpdate === 'function') {
                     window.handleProfileTaskUpdate(data.data);
                 }
+            } else if (data.type === 'send_progress') {
+                if (typeof window.handleSendProgress === 'function') {
+                    window.handleSendProgress(data.data);
+                }
             }
 
         }

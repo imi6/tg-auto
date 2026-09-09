@@ -466,6 +466,38 @@
         font-weight: 600;
         color: var(--text-primary);
         margin-bottom: 4px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 260px;
+    }
+
+    .next-run.missing {
+        color: var(--warning-color, #f59e0b);
+    }
+
+    .send-progress {
+        margin-top: 12px;
+    }
+
+    .send-progress-bar {
+        height: 6px;
+        background: var(--bg-tertiary);
+        border-radius: 999px;
+        overflow: hidden;
+    }
+
+    .send-progress-bar > div {
+        height: 100%;
+        background: var(--primary-color);
+        transition: width 0.3s ease;
+    }
+
+    .send-progress-text {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        word-break: break-word;
     }
     
     .message-card-time {
@@ -893,6 +925,11 @@
                     <select class="form-select" id="account-selector" required onchange="onAccountChange()">
                         <option value="">加载账号中...</option>
                     </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">任务名称</label>
+                    <input type="text" class="form-input" id="job-name" maxlength="40" placeholder="例如：GPT PLUS 广告，留空则用正文前几个字">
                 </div>
                 
                 <div class="form-group">
@@ -1386,7 +1423,7 @@
         if (items.length < 2) return '';
 
         const rows = items
-            .map(item => `<div>${escapeHtml(item.target_id)}: ${escapeHtml(localizeError(item.error))}</div>`)
+            .map(item => `<div>${formatTargetItem(item)}</div>`)
             .join('');
         const omitted = (total || items.length) - items.length;
 
@@ -1422,11 +1459,52 @@
         return single ? [single] : [];
     }
 
+    function targetLabel(msg, targetId) {
+        const titles = (msg && msg.target_titles) || {};
+        return titles[String(targetId)] || titles[targetId] || String(targetId);
+    }
+
+    function formatTargetItem(item) {
+        const label = item.title
+            ? `${item.title} (${item.target_id})`
+            : String(item.target_id);
+        return `${escapeHtml(label)}: ${escapeHtml(localizeError(item.error))}`;
+    }
+
     function formatTargets(msg) {
         const targets = getMessageTargets(msg);
         if (!targets.length) return '未设置';
-        if (targets.length === 1) return escapeHtml(targets[0]);
+        if (targets.length === 1) return escapeHtml(targetLabel(msg, targets[0]));
         return `${targets.length} 个群组/频道`;
+    }
+
+    function isSending(msg) {
+        return !!(msg.running || (msg.progress && msg.progress.status === 'running'));
+    }
+
+    function formatNextRun(msg) {
+        if (msg.active === false) return '';
+        if (msg.next_run_at) {
+            const text = String(msg.next_run_at).replace('T', ' ').slice(5, 16);
+            return `<span class="next-run" title="${escapeHtml(msg.next_run_at)}"><i class="bi bi-alarm"></i> 下次 ${escapeHtml(text)}</span>`;
+        }
+        return '<span class="next-run missing" title="任务已启用但没有挂上调度器">未挂上调度器</span>';
+    }
+
+    function formatProgress(msg) {
+        const progress = msg.progress;
+        if (!progress || progress.status !== 'running') return '';
+
+        const total = Number(progress.total) || 0;
+        const current = Number(progress.current) || 0;
+        const percent = total ? Math.min(100, Math.round(current / total * 100)) : 0;
+        const currentTarget = progress.current_target ? ` · ${progress.current_target}` : '';
+        const failed = progress.failed ? ` 失败 ${progress.failed}` : '';
+
+        return `<div class="send-progress">
+            <div class="send-progress-bar"><div style="width: ${percent}%"></div></div>
+            <div class="send-progress-text">发送中 ${current}/${total} · 成功 ${progress.success || 0} 跳过 ${progress.skipped || 0}${failed}${escapeHtml(currentTarget)}</div>
+        </div>`;
     }
 
     function accountLabel(accountId) {
@@ -1815,10 +1893,11 @@
             <div class="message-card">
                 <div class="message-card-header">
                     <div style="min-width: 0;">
-                        <div class="message-card-title">定时消息 #${msg.job_id || msg.id}</div>
+                        <div class="message-card-title" title="${escapeHtml(msg.name || '定时消息')}">${escapeHtml(msg.name || '定时消息')}</div>
                         ${formatAccount(msg)}
                         <div class="message-card-time">
                             <span><i class="bi bi-clock"></i> ${formatScheduleDisplay(msg)}</span>
+                            ${formatNextRun(msg)}
                             ${formatLastRun(msg)}
                         </div>
                     </div>
@@ -1837,9 +1916,10 @@
                 
                 <div class="message-card-body">
                     <div class="message-content">
-                        ${msg.use_ai ? '<i class="bi bi-robot"></i> AI生成内容' : msg.message}
+                        ${msg.use_ai ? '<i class="bi bi-robot"></i> AI生成内容' : escapeHtml(msg.message || '')}
                         ${msg.delete_after_send ? '<span style="margin-left: 10px; color: var(--warning-color);"><i class="bi bi-trash"></i> 发送后删除</span>' : ''}
                     </div>
+                    ${formatProgress(msg)}
                 </div>
                 
                 <div class="message-card-footer">
@@ -1859,8 +1939,8 @@
                         ` : ''}
                     </div>
                     <div class="message-actions" style="display: flex; gap: 8px;">
-                        <button class="btn btn-sm btn-primary" onclick="runMessageNow('${msg.job_id || msg.id}', this); event.stopPropagation();" title="立即发送一轮，方便测试">
-                            <i class="bi bi-send"></i>
+                        <button class="btn btn-sm btn-primary" ${isSending(msg) ? 'disabled' : ''} onclick="runMessageNow('${msg.job_id || msg.id}', this); event.stopPropagation();" title="${isSending(msg) ? '正在发送' : '立即发送一轮，方便测试'}">
+                            <i class="bi bi-${isSending(msg) ? 'hourglass-split' : 'send'}"></i>
                         </button>
                         <button class="btn btn-sm ${msg.active !== false ? 'btn-warning' : 'btn-success'}" onclick="toggleMessageStatus('${msg.job_id || msg.id}'); event.stopPropagation();" title="${msg.active !== false ? '暂停' : '启动'}">
                             <i class="bi bi-${msg.active !== false ? 'pause' : 'play'}"></i>
@@ -1898,6 +1978,7 @@
         editingId = id;
         document.getElementById('modalTitle').textContent = '编辑定时消息';
         document.getElementById('account-selector').value = msg.account_id || '';
+        document.getElementById('job-name').value = msg.name || '';
         
         if (msg.use_ai) {
             document.querySelector('input[name="message_type"][value="ai"]').checked = true;
@@ -1974,6 +2055,10 @@
         document.querySelector('input[name="message_type"][value="text"]').checked = true;
         toggleMessageType();
         document.getElementById('message-content').value = item.content || '';
+        const nameInput = document.getElementById('job-name');
+        if (nameInput && !nameInput.value.trim() && item.title) {
+            nameInput.value = item.title;
+        }
     }
 
     async function saveCurrentAsTemplate() {
@@ -2189,6 +2274,7 @@
         
         const formData = {
             account_id: document.getElementById('account-selector').value,
+            name: document.getElementById('job-name').value.trim(),
             message: messageType === 'text' ? document.getElementById('message-content').value : '',
             channel_ids: targetIds,
             schedule_mode: scheduleMode,
@@ -2314,21 +2400,43 @@
             const data = await response.json();
             if (!data.success) {
                 showNotification(data.message || data.detail || '发送失败', 'error');
+                if (button) {
+                    button.disabled = false;
+                    button.innerHTML = original;
+                }
                 return;
             }
 
+            const msg = messages.find(m => (m.job_id || m.id) === id);
+            if (msg) {
+                msg.running = true;
+                msg.progress = Object.assign({
+                    status: 'running', total: 0, current: 0, success: 0, failed: 0, skipped: 0
+                }, msg.progress || {}, { status: 'running' });
+            }
+            renderMessages();
             showNotification(data.message, 'success');
-            setTimeout(loadMessages, 3000);
         } catch (error) {
             console.error('立即发送失败:', error);
             showNotification('立即发送失败', 'error');
-        } finally {
             if (button) {
                 button.disabled = false;
                 button.innerHTML = original;
             }
         }
     }
+
+    window.handleSendProgress = function(progress) {
+        if (!progress || !progress.job_id || !Array.isArray(messages)) return;
+        const msg = messages.find(m => (m.job_id || m.id) === progress.job_id);
+        if (!msg) return;
+        msg.progress = progress;
+        msg.running = progress.status === 'running';
+        renderMessages();
+        if (progress.status !== 'running') {
+            setTimeout(loadMessages, 800);
+        }
+    };
 
     async function toggleMessageStatus(id) {
         if (!id || id === 'undefined' || id === 'null') {
@@ -2434,8 +2542,10 @@
                     font-size: 14px;
                     line-height: 1.6;
                 ">
+                    <p><strong>任务名称:</strong> ${escapeHtml(msg.name || '定时消息')}</p>
                     <p><strong>消息ID:</strong> ${msg.job_id || msg.id}</p>
                     <p><strong>状态:</strong> ${msg.active !== false ? '运行中' : '已暂停'}</p>
+                    <p><strong>下次发送:</strong> ${msg.active === false ? '已暂停' : (msg.next_run_at ? escapeHtml(String(msg.next_run_at).replace('T', ' ')) : '未挂上调度器')}</p>
                     <p><strong>账号:</strong> ${accountLabel(msg.account_id)}</p>
                     <p><strong>目标频道/群组:</strong> ${formatTargets(msg)}</p>
                     ${(msg.excluded_targets || []).length ? `
@@ -2443,16 +2553,16 @@
                             <summary style="cursor: pointer; color: var(--text-muted);">已剔除 ${(msg.excluded_targets || []).length} 个发不出去的目标</summary>
                             <div style="max-height: 160px; overflow-y: auto; font-size: 12px; padding: 6px 0;">
                                 ${(msg.excluded_targets || []).map(item =>
-                                    `${escapeHtml(item.target_id)}: ${escapeHtml(localizeError(item.error))}`
+                                    formatTargetItem(item)
                                 ).join('<br>')}
                             </div>
                         </details>
                     ` : ''}
                     ${getMessageTargets(msg).length > 1 ? `
                         <details style="margin: -8px 0 12px 0;">
-                            <summary style="cursor: pointer; color: var(--primary-color);">查看全部目标 ID</summary>
-                            <div style="max-height: 160px; overflow-y: auto; font-family: monospace; font-size: 12px; padding: 6px 0;">
-                                ${getMessageTargets(msg).map(t => escapeHtml(t)).join('<br>')}
+                            <summary style="cursor: pointer; color: var(--primary-color);">查看全部目标</summary>
+                            <div style="max-height: 160px; overflow-y: auto; font-size: 12px; padding: 6px 0;">
+                                ${getMessageTargets(msg).map(t => escapeHtml(targetLabel(msg, t))).join('<br>')}
                             </div>
                         </details>
                         <p><strong>目标间隔:</strong> ${msg.send_interval ?? 5} 秒</p>

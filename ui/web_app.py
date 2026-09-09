@@ -245,6 +245,7 @@ class WebApp:
         
         self.join_task_manager.add_listener(self._on_join_task_update)
         self.profile_task_manager.add_listener(self._on_profile_task_update)
+        self.monitor_engine.add_progress_listener(self._on_send_progress)
         
         self.logger.info("Web应用初始化完成")
     
@@ -253,6 +254,9 @@ class WebApp:
     
     async def _on_profile_task_update(self, task: Dict[str, Any]):
         await self.broadcast_message({"type": "profile_task_update", "data": task})
+    
+    async def _on_send_progress(self, progress: Dict[str, Any]):
+        await self.broadcast_message({"type": "send_progress", "data": progress})
     
     async def get_connected_client(self, account_id: str):
         """获取账号可用的客户端，账号不存在时抛 404，未登录或连接失败时返回 None"""
@@ -303,7 +307,7 @@ class WebApp:
             self.web_username = default_username
             self.web_password = default_password
         
-        self.logger.info(f"Web认证配置 - 用户名: {self.web_username}, 密码: {self.web_password}")
+        self.logger.info(f"Web认证已配置，用户名: {self.web_username}")
         
         if self.web_password in ['admin123', 'your_secure_password_here', 'admin']:
             self.logger.warning("检测到使用默认密码，强烈建议在.env文件中设置安全的WEB_PASSWORD")
@@ -2518,7 +2522,8 @@ class WebApp:
                     execution_count=0,
                     use_ai=message.get("use_ai", False),
                     ai_prompt=message.get("ai_prompt"),
-                    precheck=bool(message.get("precheck", True))
+                    precheck=bool(message.get("precheck", True)),
+                    name=(message.get("name") or "").strip()
                 ))
                 
                 template_id = message.get("template_id")
@@ -2646,6 +2651,12 @@ class WebApp:
                             ],
                             'send_interval': self.parse_send_interval(data),
                             'precheck': bool(data.get('precheck', True)),
+                            'name': (data.get('name') or msg.get('name') or '').strip()
+                                    or engine.default_job_name(
+                                        data.get('message', ''),
+                                        data.get('use_ai', False),
+                                        data.get('ai_prompt') or ''
+                                    ),
                             'schedule': new_cron,
                             'cron': new_cron,
                             'schedule_mode': schedule_mode,
@@ -2701,6 +2712,16 @@ class WebApp:
 
             asyncio.create_task(engine.run_scheduled_message_now(job_id))
             return {"success": True, "message": "已开始立即发送，完成后可在发送记录里查看"}
+
+        @self.app.get("/api/scheduled-messages/{job_id}/progress")
+        async def get_scheduled_message_progress(request: Request, job_id: str):
+            user = self.get_current_user(request)
+            engine = MonitorEngine()
+            return {
+                "success": True,
+                "progress": engine.get_send_progress(job_id),
+                "running": job_id in engine._running_scheduled_jobs,
+            }
         
         @self.app.put("/api/scheduled-messages/{job_id}/toggle")
         async def toggle_scheduled_message(request: Request, job_id: str):
@@ -3338,7 +3359,8 @@ class WebApp:
                                 execution_count=msg_data.get('execution_count', 0),
                                 use_ai=msg_data.get('use_ai', False),
                                 ai_prompt=msg_data.get('ai_prompt'),
-                                schedule_mode=msg_data.get('schedule_mode', 'cron')
+                                schedule_mode=msg_data.get('schedule_mode', 'cron'),
+                                name=(msg_data.get('name') or '').strip()
                             )
                             
                             self.monitor_engine.add_scheduled_message(config)
