@@ -75,6 +75,89 @@
         padding: 0;
     }
 
+    .bulk-filter {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .bulk-filter .form-select {
+        width: auto;
+        min-width: 128px;
+        padding: 6px 10px;
+        font-size: 13px;
+    }
+
+    .bulk-filter-count {
+        color: var(--text-muted);
+        white-space: nowrap;
+    }
+
+    .template-picker {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .template-picker .form-select {
+        width: auto;
+        min-width: 160px;
+        padding: 6px 10px;
+        font-size: 13px;
+    }
+
+    .template-editor {
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .template-editor-actions {
+        display: flex;
+        gap: 8px;
+    }
+
+    .template-item {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .template-item:last-child {
+        border-bottom: none;
+    }
+
+    .template-item-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .template-item-preview {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        word-break: break-word;
+    }
+
+    .template-item-meta {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+
+    .template-item-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        flex-shrink: 0;
+    }
+
     .pm-tag {
         display: inline-flex;
         align-items: center;
@@ -628,8 +711,30 @@
         <button type="button" class="btn-link" onclick="toggleAllAccounts(true)">全选</button>
         <button type="button" class="btn-link" onclick="toggleAllAccounts(false)">全不选</button>
         <span>已选中 <strong id="selectedAccountCount">0</strong> 个账号</span>
+        <div class="bulk-filter">
+            <label for="health-filter">受限状态</label>
+            <select id="health-filter" class="form-select" onchange="onHealthFilterChange()">
+                <option value="all">全部</option>
+                <option value="limited">已受限</option>
+                <option value="free">未受限</option>
+            </select>
+            <span id="health-filter-count" class="bulk-filter-count"></span>
+        </div>
     </div>
-    <div style="display: flex; gap: 10px;">
+    <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+        <div class="template-picker">
+            <select id="profile-template-picker" class="form-select" title="选择资料模板">
+                <option value="">选择资料模板...</option>
+            </select>
+            <button class="btn btn-primary btn-sm" id="applyTemplateBtn" onclick="applySelectedProfileTemplate()">
+                <i class="bi bi-magic"></i>
+                一键套用
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="showProfileTemplateModal()">
+                <i class="bi bi-collection"></i>
+                管理模板
+            </button>
+        </div>
         <button class="btn btn-secondary btn-sm" id="batchHealthBtn" onclick="checkSelectedHealth()">
             <i class="bi bi-shield-check"></i>
             检测受限状态
@@ -679,6 +784,13 @@
             </p>
 
             <div class="form-group">
+                <label class="form-label">从资料模板填入</label>
+                <select id="batch-template-picker" class="form-select" onchange="fillBatchFromTemplate()">
+                    <option value="">不使用模板</option>
+                </select>
+            </div>
+
+            <div class="form-group">
                 <label class="form-label">名字</label>
                 <input type="text" class="form-input" id="batchFirstName" maxlength="64" placeholder="留空表示不修改">
             </div>
@@ -721,6 +833,54 @@
                 <i class="bi bi-pencil-square"></i>
                 开始修改
             </button>
+        </div>
+    </div>
+</div>
+
+<div class="modal" id="profileTemplateModal">
+    <div class="modal-content" style="max-width: 720px;">
+        <div class="modal-header">
+            <h3 class="modal-title" id="profileTemplateModalTitle">资料模板</h3>
+            <button class="modal-close" onclick="hideProfileTemplateModal()">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="template-editor">
+                <div class="form-group">
+                    <label class="form-label">模板名称</label>
+                    <input type="text" class="form-input" id="tpl-title" maxlength="40" placeholder="例如：广告号资料">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">名字</label>
+                    <input type="text" class="form-input" id="tpl-first-name" maxlength="64" placeholder="留空表示套用时不改名字">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">
+                        姓氏
+                        <label style="float: right; font-weight: 400; cursor: pointer;">
+                            <input type="checkbox" id="tpl-clear-last-name" onchange="onTplClearToggle('LastName')"> 清空姓氏
+                        </label>
+                    </label>
+                    <input type="text" class="form-input" id="tpl-last-name" maxlength="64" placeholder="留空表示套用时不改姓氏">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">
+                        简介
+                        <label style="float: right; font-weight: 400; cursor: pointer;">
+                            <input type="checkbox" id="tpl-clear-about" onchange="onTplClearToggle('About')"> 清空简介
+                        </label>
+                    </label>
+                    <textarea class="form-input" id="tpl-about" rows="3" maxlength="140" placeholder="留空表示套用时不改简介"></textarea>
+                </div>
+                <div class="template-editor-actions">
+                    <button type="button" class="btn btn-primary btn-sm" onclick="submitProfileTemplate()">保存模板</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="resetProfileTemplateEditor()">取消编辑</button>
+                </div>
+            </div>
+            <div id="profile-template-list">
+                <div style="padding: 24px; text-align: center; color: var(--text-muted);">加载中...</div>
+            </div>
         </div>
     </div>
 </div>
@@ -981,6 +1141,14 @@
             </div>
 
             <form id="profileForm" style="display: none;">
+                <div class="form-group">
+                    <label class="form-label">从资料模板填入</label>
+                    <select id="single-template-picker" class="form-select" onchange="fillSingleFromTemplate()">
+                        <option value="">不使用模板</option>
+                    </select>
+                    <small class="form-help">只会填入名字、姓氏和简介，用户名需单独改</small>
+                </div>
+
                 <div class="form-group">
                     <label class="form-label">用户名</label>
                     <div style="display: flex; gap: 8px;">
@@ -1312,29 +1480,82 @@
         }
     });
     
+    let accountList = [];
+    let healthFilter = 'all';
+
+    function accountHealthState(account) {
+        const health = (account && account.health) || {};
+        if (account && account.is_limited) return 'limited';
+        // 检测记录仍是 limited，但限制期已过，按未受限展示
+        if (health.state === 'limited') return 'free';
+        return health.state || 'unknown';
+    }
+
+    function filteredAccounts() {
+        if (healthFilter === 'limited') {
+            return accountList.filter(account => accountHealthState(account) === 'limited');
+        }
+        if (healthFilter === 'free') {
+            return accountList.filter(account => accountHealthState(account) !== 'limited');
+        }
+        return accountList;
+    }
+
+    function onHealthFilterChange() {
+        const select = document.getElementById('health-filter');
+        healthFilter = select ? select.value : 'all';
+        renderAccountCards();
+    }
+
+    function updateHealthFilterCount(visibleCount) {
+        const el = document.getElementById('health-filter-count');
+        if (!el) return;
+        if (healthFilter === 'all' || !accountList.length) {
+            el.textContent = '';
+            return;
+        }
+        el.textContent = `显示 ${visibleCount} / ${accountList.length}`;
+    }
+
     async function loadAccounts() {
         try {
             const response = await fetch('/api/accounts');
             const data = await response.json();
-            const accounts = data.accounts || [];
-            
-            const grid = document.getElementById('accountsGrid');
-            
-            const addAccountCard = grid.querySelector('.add-account-card');
-            grid.innerHTML = '';
-            
-            if (accounts.length === 0) {
-                grid.innerHTML = `
-                    <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px;">
-                        <div class="empty-state-icon">
-                            <i class="bi bi-people"></i>
-                        </div>
-                        <div class="empty-state-title">暂无账号</div>
-                        <div class="empty-state-text">点击添加您的第一个Telegram账号</div>
+            accountList = data.accounts || [];
+            renderAccountCards();
+        } catch (error) {
+            console.error('Failed to load accounts:', error);
+            showNotification('加载账号列表失败', 'error');
+        }
+    }
+
+    function renderAccountCards() {
+        const accounts = accountList;
+        const visibleAccounts = filteredAccounts();
+        const grid = document.getElementById('accountsGrid');
+        if (!grid) return;
+
+        const addAccountCard = grid.querySelector('.add-account-card');
+        grid.innerHTML = '';
+
+        if (accounts.length === 0) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px;">
+                    <div class="empty-state-icon">
+                        <i class="bi bi-people"></i>
                     </div>
-                `;
-            } else {
-                accounts.forEach(account => {
+                    <div class="empty-state-title">暂无账号</div>
+                    <div class="empty-state-text">点击添加您的第一个Telegram账号</div>
+                </div>
+            `;
+        } else if (visibleAccounts.length === 0) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 40px 20px; color: var(--text-muted);">
+                    当前筛选下没有账号
+                </div>
+            `;
+        } else {
+            visibleAccounts.forEach(account => {
                     let statusClass = 'offline';
                     let statusDotClass = 'offline';
                     
@@ -1423,31 +1644,27 @@
                     `;
                     grid.appendChild(card);
                 });
-            }
-            
-            if (addAccountCard) {
-                grid.appendChild(addAccountCard);
-            } else {
-                const addCard = document.createElement('div');
-                addCard.className = 'add-account-card';
-                addCard.onclick = showAddAccountModal;
-                addCard.innerHTML = `
-                    <div class="add-account-icon">
-                        <i class="bi bi-plus-lg"></i>
-                    </div>
-                    <div class="add-account-text">添加新账号</div>
-                    <div class="add-account-subtext">点击添加Telegram账号</div>
-                `;
-                grid.appendChild(addCard);
-            }
-            
-            updateAccountStats(accounts);
-            restoreAccountSelection(accounts);
-            
-        } catch (error) {
-            console.error('Failed to load accounts:', error);
-            showNotification('加载账号列表失败', 'error');
         }
+            
+        if (addAccountCard) {
+            grid.appendChild(addAccountCard);
+        } else {
+            const addCard = document.createElement('div');
+            addCard.className = 'add-account-card';
+            addCard.onclick = showAddAccountModal;
+            addCard.innerHTML = `
+                <div class="add-account-icon">
+                    <i class="bi bi-plus-lg"></i>
+                </div>
+                <div class="add-account-text">添加新账号</div>
+                <div class="add-account-subtext">点击添加Telegram账号</div>
+            `;
+            grid.appendChild(addCard);
+        }
+
+        updateHealthFilterCount(visibleAccounts.length);
+        updateAccountStats(accounts);
+        restoreAccountSelection(accounts);
     }
     
     const HEALTH_TEXT = { free: '未受限', limited: '已受限', unknown: '未检测' };
@@ -1455,8 +1672,7 @@
 
     function renderHealthBadge(account) {
         const health = account.health || {};
-        const state = account.is_limited ? 'limited' : (health.state === 'limited' ? 'free' : health.state || 'unknown');
-        // state 为 limited 但 is_limited 为假，说明限制期已过，按未受限展示
+        const state = accountHealthState(account);
 
         const checkedAt = health.checked_at ? health.checked_at.replace('T', ' ').split('.')[0] : '';
         const until = account.is_limited && health.until ? `，解封时间 ${health.until}` : '';
@@ -1836,6 +2052,7 @@
             document.getElementById('profileAbout').maxLength = aboutLimit;
 
             const premiumLimit = limits.about_premium || profileLimits.about_premium;
+            document.getElementById('single-template-picker').value = '';
             document.getElementById('profileAboutHint').textContent = data.profile.premium
                 ? `Premium 账号，简介上限 ${aboutLimit} 字符`
                 : `普通账号上限 ${aboutLimit} 字符，Premium 账号可用 ${premiumLimit} 字符`;
@@ -1987,6 +2204,7 @@
         });
         document.getElementById('clearLastName').checked = false;
         document.getElementById('clearAbout').checked = false;
+        document.getElementById('batch-template-picker').value = '';
         updateBatchCounter();
 
         document.getElementById('batchProfileModal').classList.add('show');
@@ -2085,6 +2303,251 @@
         } finally {
             button.disabled = false;
         }
+    }
+
+    let profileTemplates = [];
+    let editingProfileTemplateId = null;
+
+    async function loadProfileTemplates() {
+        try {
+            const response = await fetch('/api/profile-templates');
+            const data = await response.json();
+            profileTemplates = data.templates || [];
+        } catch (error) {
+            console.error('加载资料模板失败:', error);
+            profileTemplates = [];
+        }
+        fillProfileTemplatePickers();
+        renderProfileTemplates();
+    }
+
+    function fillProfileTemplatePickers() {
+        ['profile-template-picker', 'batch-template-picker', 'single-template-picker'].forEach(id => {
+            const select = document.getElementById(id);
+            if (!select) return;
+            const current = select.value;
+            const placeholder = id === 'profile-template-picker' ? '选择资料模板...' : '不使用模板';
+            select.innerHTML = `<option value="">${placeholder}</option>` + profileTemplates.map(item =>
+                `<option value="${item.template_id}">${escapeHtml(item.title)}</option>`
+            ).join('');
+            if (current && profileTemplates.some(item => item.template_id === current)) {
+                select.value = current;
+            }
+        });
+    }
+
+    function showProfileTemplateModal() {
+        resetProfileTemplateEditor();
+        document.getElementById('profileTemplateModal').classList.add('show');
+        renderProfileTemplates();
+    }
+
+    function hideProfileTemplateModal() {
+        document.getElementById('profileTemplateModal').classList.remove('show');
+        resetProfileTemplateEditor();
+    }
+
+    function resetProfileTemplateEditor() {
+        editingProfileTemplateId = null;
+        document.getElementById('profileTemplateModalTitle').textContent = '资料模板';
+        document.getElementById('tpl-title').value = '';
+        document.getElementById('tpl-first-name').value = '';
+        document.getElementById('tpl-last-name').value = '';
+        document.getElementById('tpl-last-name').disabled = false;
+        document.getElementById('tpl-about').value = '';
+        document.getElementById('tpl-about').disabled = false;
+        document.getElementById('tpl-clear-last-name').checked = false;
+        document.getElementById('tpl-clear-about').checked = false;
+    }
+
+    function onTplClearToggle(field) {
+        const checkbox = document.getElementById(field === 'LastName' ? 'tpl-clear-last-name' : 'tpl-clear-about');
+        const input = document.getElementById(field === 'LastName' ? 'tpl-last-name' : 'tpl-about');
+        input.disabled = checkbox.checked;
+        if (checkbox.checked) input.value = '';
+    }
+
+    function collectProfileTemplatePayload() {
+        return {
+            title: document.getElementById('tpl-title').value.trim(),
+            first_name: document.getElementById('tpl-first-name').value.trim(),
+            last_name: document.getElementById('tpl-last-name').value.trim(),
+            about: document.getElementById('tpl-about').value,
+            clear_last_name: document.getElementById('tpl-clear-last-name').checked,
+            clear_about: document.getElementById('tpl-clear-about').checked
+        };
+    }
+
+    function editProfileTemplate(templateId) {
+        const item = profileTemplates.find(tpl => tpl.template_id === templateId);
+        if (!item) return;
+        editingProfileTemplateId = templateId;
+        document.getElementById('profileTemplateModalTitle').textContent = '编辑资料模板';
+        document.getElementById('tpl-title').value = item.title || '';
+        document.getElementById('tpl-first-name').value = item.first_name || '';
+        document.getElementById('tpl-clear-last-name').checked = !!item.clear_last_name;
+        document.getElementById('tpl-last-name').value = item.clear_last_name ? '' : (item.last_name || '');
+        document.getElementById('tpl-last-name').disabled = !!item.clear_last_name;
+        document.getElementById('tpl-clear-about').checked = !!item.clear_about;
+        document.getElementById('tpl-about').value = item.clear_about ? '' : (item.about || '');
+        document.getElementById('tpl-about').disabled = !!item.clear_about;
+        document.getElementById('tpl-title').focus();
+    }
+
+    async function submitProfileTemplate() {
+        const payload = collectProfileTemplatePayload();
+        const url = editingProfileTemplateId
+            ? `/api/profile-templates/${encodeURIComponent(editingProfileTemplateId)}`
+            : '/api/profile-templates';
+        try {
+            const response = await fetch(url, {
+                method: editingProfileTemplateId ? 'PUT' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                showNotification(data.detail || data.message || '保存失败', 'error');
+                return;
+            }
+            showNotification(data.message, 'success');
+            resetProfileTemplateEditor();
+            await loadProfileTemplates();
+        } catch (error) {
+            console.error('保存资料模板失败:', error);
+            showNotification('保存资料模板失败', 'error');
+        }
+    }
+
+    async function deleteProfileTemplate(templateId) {
+        if (!confirm('确定删除这个资料模板吗？')) return;
+        try {
+            const response = await fetch(`/api/profile-templates/${encodeURIComponent(templateId)}`, {
+                method: 'DELETE'
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                showNotification(data.detail || data.message || '删除失败', 'error');
+                return;
+            }
+            if (editingProfileTemplateId === templateId) resetProfileTemplateEditor();
+            showNotification(data.message, 'success');
+            await loadProfileTemplates();
+        } catch (error) {
+            console.error('删除资料模板失败:', error);
+            showNotification('删除资料模板失败', 'error');
+        }
+    }
+
+    function renderProfileTemplates() {
+        const list = document.getElementById('profile-template-list');
+        if (!list) return;
+        if (!profileTemplates.length) {
+            list.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted);">还没有资料模板，先在上方保存一组名字和简介</div>';
+            return;
+        }
+        list.innerHTML = profileTemplates.map(item => `
+            <div class="template-item">
+                <div>
+                    <div class="template-item-title">${escapeHtml(item.title)}</div>
+                    <div class="template-item-preview">${escapeHtml(item.preview || '')}</div>
+                    <div class="template-item-meta">用过 ${item.used_count || 0} 次</div>
+                </div>
+                <div class="template-item-actions">
+                    <button type="button" class="btn btn-sm btn-primary" onclick="applyProfileTemplate('${item.template_id}')">应用到已选账号</button>
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="editProfileTemplate('${item.template_id}')">编辑</button>
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="deleteProfileTemplate('${item.template_id}')">删除</button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function describeTemplateChanges(item) {
+        const changes = [];
+        if (item.first_name) changes.push(`名字 → ${item.first_name}`);
+        if (item.clear_last_name) changes.push('姓氏 → （清空）');
+        else if (item.last_name) changes.push(`姓氏 → ${item.last_name}`);
+        if (item.clear_about) changes.push('简介 → （清空）');
+        else if ((item.about || '').trim()) changes.push(`简介 → ${item.about}`);
+        return changes;
+    }
+
+    function applySelectedProfileTemplate() {
+        const templateId = document.getElementById('profile-template-picker').value;
+        if (!templateId) {
+            showNotification('请先选择资料模板', 'warning');
+            return;
+        }
+        applyProfileTemplate(templateId);
+    }
+
+    async function applyProfileTemplate(templateId) {
+        const item = profileTemplates.find(tpl => tpl.template_id === templateId);
+        if (!item) {
+            showNotification('资料模板不存在，请刷新后重试', 'error');
+            return;
+        }
+        const accountIds = [...selectedAccountIds];
+        if (!accountIds.length) {
+            showNotification('请先勾选要修改的账号', 'warning');
+            return;
+        }
+        const changes = describeTemplateChanges(item);
+        if (!changes.length) {
+            showNotification('这个模板没有可应用的字段', 'warning');
+            return;
+        }
+        if (!confirm(`将用模板「${item.title}」修改 ${accountIds.length} 个账号：\n${changes.join('\n')}\n\n确定继续吗？`)) {
+            return;
+        }
+
+        const button = document.getElementById('applyTemplateBtn');
+        if (button) button.disabled = true;
+        try {
+            const response = await fetch(`/api/profile-templates/${encodeURIComponent(templateId)}/apply`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ account_ids: accountIds })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                showNotification(data.detail || data.message || '套用失败', 'error');
+                return;
+            }
+            hideProfileTemplateModal();
+            showNotification(data.message, 'success');
+            await loadProfileTemplates();
+            await loadProfileTasks();
+        } catch (error) {
+            console.error('套用资料模板失败:', error);
+            showNotification('套用资料模板失败', 'error');
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
+    function fillBatchFromTemplate() {
+        const item = profileTemplates.find(tpl => tpl.template_id === document.getElementById('batch-template-picker').value);
+        if (!item) return;
+        document.getElementById('batchFirstName').value = item.first_name || '';
+        document.getElementById('clearLastName').checked = !!item.clear_last_name;
+        document.getElementById('batchLastName').value = item.clear_last_name ? '' : (item.last_name || '');
+        document.getElementById('batchLastName').disabled = !!item.clear_last_name;
+        document.getElementById('clearAbout').checked = !!item.clear_about;
+        document.getElementById('batchAbout').value = item.clear_about ? '' : (item.about || '');
+        document.getElementById('batchAbout').disabled = !!item.clear_about;
+        updateBatchCounter();
+    }
+
+    function fillSingleFromTemplate() {
+        const item = profileTemplates.find(tpl => tpl.template_id === document.getElementById('single-template-picker').value);
+        if (!item) return;
+        if (item.first_name) document.getElementById('profileFirstName').value = item.first_name;
+        if (item.clear_last_name) document.getElementById('profileLastName').value = '';
+        else if (item.last_name) document.getElementById('profileLastName').value = item.last_name;
+        if (item.clear_about) document.getElementById('profileAbout').value = '';
+        else if (item.about) document.getElementById('profileAbout').value = item.about;
+        updateAboutCounter();
     }
 
     let profileTasks = [];
@@ -2269,8 +2732,15 @@
         }
     });
 
+    document.getElementById('profileTemplateModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            hideProfileTemplateModal();
+        }
+    });
+
     loadAccounts();
     loadProfileTasks();
     loadProfileLimits();
+    loadProfileTemplates();
 </script>
 {% endblock %}

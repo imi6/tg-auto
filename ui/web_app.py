@@ -28,6 +28,7 @@ from core.profile_task_manager import ProfileTaskManager
 from core.group_library_store import GroupLibraryStore
 from core.account_health_store import AccountHealthStore
 from core.message_template_store import MessageTemplateStore
+from core.profile_template_store import ProfileTemplateStore
 from core.proxy_manager import ProxyManager
 from core.send_record_store import SendRecordStore
 from utils.session_meta import parse_session_metadata
@@ -207,6 +208,19 @@ class BatchProfileRequest(BaseModel):
     about: Optional[str] = None
 
 
+class ProfileTemplateRequest(BaseModel):
+    title: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    about: str = ""
+    clear_last_name: bool = False
+    clear_about: bool = False
+
+
+class ApplyProfileTemplateRequest(BaseModel):
+    account_ids: List[str]
+
+
 class WebApp:
     
     def __init__(self):
@@ -229,6 +243,7 @@ class WebApp:
         self.profile_task_manager = ProfileTaskManager()
         self.group_library = GroupLibraryStore()
         self.message_templates = MessageTemplateStore()
+        self.profile_templates = ProfileTemplateStore()
         self.health_service = HealthService()
         self.health_store = AccountHealthStore()
         self.precheck_service = PrecheckService()
@@ -2415,6 +2430,97 @@ class WebApp:
                 return {"success": False, "message": "任务运行中，请先取消"}
             
             return {"success": True, "message": "任务记录已删除"}
+
+        @self.app.get("/api/profile-templates")
+        async def list_profile_templates(request: Request, keyword: str = ""):
+            user = self.get_current_user(request)
+            templates = self.profile_templates.list_templates(keyword=keyword)
+            return {"success": True, "templates": templates, "total": len(templates)}
+
+        @self.app.post("/api/profile-templates")
+        async def create_profile_template(request: Request, template_request: ProfileTemplateRequest):
+            user = self.get_current_user(request)
+            try:
+                template = self.profile_templates.add(
+                    title=template_request.title,
+                    first_name=template_request.first_name,
+                    last_name=template_request.last_name,
+                    about=template_request.about,
+                    clear_last_name=template_request.clear_last_name,
+                    clear_about=template_request.clear_about,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            return {"success": True, "template": template, "message": "资料模板已保存"}
+
+        @self.app.put("/api/profile-templates/{template_id}")
+        async def update_profile_template(request: Request, template_id: str,
+                                          template_request: ProfileTemplateRequest):
+            user = self.get_current_user(request)
+            try:
+                template = self.profile_templates.update(
+                    template_id,
+                    title=template_request.title,
+                    first_name=template_request.first_name,
+                    last_name=template_request.last_name,
+                    about=template_request.about,
+                    clear_last_name=template_request.clear_last_name,
+                    clear_about=template_request.clear_about,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if not template:
+                raise HTTPException(status_code=404, detail="资料模板不存在")
+            return {"success": True, "template": template, "message": "资料模板已更新"}
+
+        @self.app.delete("/api/profile-templates/{template_id}")
+        async def delete_profile_template(request: Request, template_id: str):
+            user = self.get_current_user(request)
+            if not self.profile_templates.delete(template_id):
+                raise HTTPException(status_code=404, detail="资料模板不存在")
+            return {"success": True, "message": "资料模板已删除"}
+
+        @self.app.post("/api/profile-templates/{template_id}/apply")
+        async def apply_profile_template(request: Request, template_id: str,
+                                         apply_request: ApplyProfileTemplateRequest):
+            user = self.get_current_user(request)
+            template = self.profile_templates.get(template_id)
+            if not template:
+                raise HTTPException(status_code=404, detail="资料模板不存在")
+            if not apply_request.account_ids:
+                return {"success": False, "message": "请至少选择一个账号"}
+
+            missing = [
+                account_id for account_id in apply_request.account_ids
+                if not self.account_manager.get_account(account_id)
+            ]
+            if missing:
+                return {"success": False, "message": f"账号不存在: {', '.join(missing)}"}
+
+            try:
+                fields = self.profile_templates.to_profile_fields(template)
+            except ValueError as e:
+                return {"success": False, "message": str(e)}
+
+            error = self.profile_service.validate_profile_fields(
+                fields['first_name'], fields['last_name'], fields['about']
+            )
+            if error:
+                return {"success": False, "message": error}
+
+            task = self.profile_task_manager.create_task(
+                account_ids=apply_request.account_ids,
+                first_name=fields['first_name'],
+                last_name=fields['last_name'],
+                about=fields['about']
+            )
+            self.profile_templates.mark_used(template_id)
+            return {
+                "success": True,
+                "task": task,
+                "template": template,
+                "message": f"已用模板「{template.get('title') or '资料模板'}」修改 {len(apply_request.account_ids)} 个账号"
+            }
         
         @self.app.get("/api/message-templates")
         async def list_message_templates(request: Request, keyword: str = ""):

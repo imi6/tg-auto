@@ -13,6 +13,7 @@ from .profile_task_manager import ProfileTaskManager
 from .group_library_store import GroupLibraryStore
 from .account_health_store import AccountHealthStore
 from .message_template_store import MessageTemplateStore
+from .profile_template_store import ProfileTemplateStore
 
 __all__ = [
     'ProxyManager',
@@ -20,6 +21,7 @@ __all__ = [
     'GroupLibraryStore',
     'AccountHealthStore',
     'MessageTemplateStore',
+    'ProfileTemplateStore',
     'AccountManager',
     'MonitorEngine',
     'BatchTaskManager',
