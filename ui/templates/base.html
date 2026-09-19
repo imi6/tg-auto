@@ -1151,6 +1151,42 @@
         .tooltip:hover::after {
             opacity: 1;
         }
+
+        /* 所有弹窗：标题栏、顶栏、底栏固定，只滚动中间内容 */
+        .modal-content,
+        .gm-modal-content,
+        .px-modal-content,
+        .config-modal-content {
+            display: flex;
+            flex-direction: column;
+            max-height: 90vh;
+            overflow: hidden;
+        }
+
+        .modal-header,
+        .gm-modal-header,
+        .px-modal-header,
+        .config-modal-header,
+        .modal-footer,
+        .gm-modal-footer,
+        .px-modal-footer,
+        .modal-toolbar,
+        .record-pager {
+            flex-shrink: 0;
+        }
+
+        .modal-body,
+        .gm-modal-body,
+        .px-modal-body,
+        .config-modal-body {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+        }
+
+        .modal-toolbar {
+            padding: 12px 24px 0;
+        }
     </style>
     
     {% block extra_css %}{% endblock %}

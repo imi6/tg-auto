@@ -1268,6 +1268,13 @@ class MonitorEngine(metaclass=Singleton):
             return '目标为私有群组且当前账号不在其中'
         if 'cannot send plain results' in text:
             return '该群开启了话题，不能直接往群里发普通消息'
+        if 'allow_payment_required' in text:
+            import re
+            match = re.search(r'allow_payment_required[_ ]?(\d+)', text)
+            stars = int(match.group(1)) if match else 0
+            if stars:
+                return f'该群开启了付费发言，发送一条需支付 {stars} Stars'
+            return '该群开启了付费发言，未付费无法发送'
         if 'channel_private' in text or 'chat_forbidden' in text:
             return '目标为私有群组且当前账号不在其中'
         if 'chat_write_forbidden' in text or "can't write in this chat" in text:
@@ -1287,6 +1294,8 @@ class MonitorEngine(metaclass=Singleton):
         '找不到该目标',
         '无权在该群发言',
         'cannot send plain results',
+        '付费发言',
+        'allow_payment_required',
     )
 
     @classmethod

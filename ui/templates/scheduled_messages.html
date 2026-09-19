@@ -156,9 +156,12 @@
         justify-content: flex-end;
         gap: 10px;
         flex-wrap: wrap;
-        margin-top: 14px;
+        padding: 12px 24px 16px;
+        margin-top: 0;
+        border-top: 1px solid var(--border-color);
         font-size: 13px;
         color: var(--text-secondary);
+        background: var(--bg-card);
     }
 
     .record-pager-pages {
@@ -799,7 +802,7 @@
         width: 90%;
         max-width: 600px;
         max-height: 90vh;
-        overflow-y: auto;
+        overflow: hidden;
         animation: modalSlideIn 0.3s ease;
     }
     
@@ -851,6 +854,8 @@
     
     .modal-body {
         padding: 24px;
+        overflow-y: auto;
+        min-height: 0;
     }
     
     .modal-footer {
@@ -1037,7 +1042,7 @@
             </button>
         </div>
 
-        <div class="modal-body">
+        <div class="modal-toolbar">
             <div class="record-tabs">
                 <button type="button" class="record-tab active" id="records-tab-targets" onclick="switchRecordsTab('targets')">按目标</button>
                 <button type="button" class="record-tab" id="records-tab-rounds" onclick="switchRecordsTab('rounds')">按轮次</button>
@@ -1075,12 +1080,14 @@
                     <i class="bi bi-trash"></i> 清空记录
                 </button>
             </div>
+        </div>
 
+        <div class="modal-body">
             <div id="records-list">
                 <div class="record-empty">加载中...</div>
             </div>
-            <div class="record-pager" id="record-pager" style="display: none;"></div>
         </div>
+        <div class="record-pager" id="record-pager" style="display: none;"></div>
     </div>
 </div>
 
@@ -1646,7 +1653,9 @@
 
     function formatRecordTime(value) {
         if (!value) return '—';
-        return String(value).replace('T', ' ').replace(/-/g, '/');
+        let text = String(value).replace('T', ' ').replace(/-/g, '/');
+        if (/^\d{4}\//.test(text)) text = text.slice(5);
+        return text;
     }
 
     function renderTargetPager(total, totalPages) {
@@ -1775,6 +1784,13 @@
         if (/cannot send plain results/i.test(raw)) {
             return raw.replace(/You cannot send plain results in this chat \(caused by SendMessageRequest\)/i,
                                '该群开启了话题，不能直接往群里发普通消息');
+        }
+        const paid = raw.match(/ALLOW_PAYMENT_REQUIRED[_ ]?(\d+)/i);
+        if (paid) {
+            return `该群开启了付费发言，发送一条需支付 ${paid[1]} Stars`;
+        }
+        if (/allow_payment_required/i.test(raw)) {
+            return '该群开启了付费发言，未付费无法发送';
         }
         return raw;
     }
@@ -2874,20 +2890,21 @@
             <div style="
                 background: var(--bg-card);
                 border-radius: var(--radius-lg);
-                padding: 24px;
                 max-width: 600px;
                 width: 90%;
-                max-height: 80%;
-                overflow-y: auto;
+                max-height: 80vh;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
                 box-shadow: var(--shadow-lg);
             ">
                 <div style="
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
-                    margin-bottom: 20px;
+                    padding: 20px 24px 12px;
                     border-bottom: 1px solid var(--border-color);
-                    padding-bottom: 12px;
+                    flex-shrink: 0;
                 ">
                     <h3 style="color: var(--text-primary); margin: 0;">定时消息详情</h3>
                     <button onclick="this.parentElement.parentElement.parentElement.remove()" 
@@ -2903,8 +2920,9 @@
                 </div>
                 <div style="
                     background: var(--bg-secondary);
-                    padding: 16px;
-                    border-radius: var(--radius-md);
+                    padding: 16px 24px 24px;
+                    overflow-y: auto;
+                    min-height: 0;
                     color: var(--text-primary);
                     font-size: 14px;
                     line-height: 1.6;

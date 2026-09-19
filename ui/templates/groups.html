@@ -391,7 +391,7 @@
         width: 100%;
         max-width: 720px;
         max-height: 90vh;
-        overflow-y: auto;
+        overflow: hidden;
         box-shadow: var(--shadow-lg);
     }
 
@@ -414,6 +414,8 @@
         display: flex;
         flex-direction: column;
         gap: 20px;
+        overflow-y: auto;
+        min-height: 0;
     }
 
     .gm-modal-footer {
@@ -513,6 +515,109 @@
         font-family: 'SFMono-Regular', Consolas, monospace;
         color: var(--text-primary);
         word-break: break-all;
+    }
+
+    .join-table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        background: var(--bg-card);
+        margin-top: 12px;
+    }
+
+    .join-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .join-table th,
+    .join-table td {
+        padding: 11px 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+        vertical-align: middle;
+    }
+
+    .join-table th {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-muted);
+        background: var(--bg-secondary);
+        white-space: nowrap;
+    }
+
+    .join-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .join-table tbody tr:hover {
+        background: var(--bg-hover);
+    }
+
+    .join-current {
+        color: var(--text-primary);
+        word-break: break-all;
+    }
+
+    .join-current-label {
+        color: var(--text-muted);
+        font-size: 12px;
+        margin-right: 6px;
+        white-space: nowrap;
+    }
+
+    .join-toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-top: 16px;
+    }
+
+    .join-toolbar .gm-input,
+    .join-toolbar .gm-select {
+        height: 34px;
+        font-size: 13px;
+    }
+
+    .join-pager {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .join-pager-pages {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .join-pager-pages button {
+        min-width: 32px;
+        height: 32px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-card);
+        color: var(--text-secondary);
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+    }
+
+    .join-pager-pages button.active {
+        background: var(--primary-color);
+        border-color: var(--primary-color);
+        color: #fff;
+    }
+
+    .join-pager-pages button:disabled {
+        opacity: 0.45;
+        cursor: default;
     }
 
     .gm-spinner {
@@ -1698,7 +1803,73 @@
             return;
         }
 
+        const focusedId = document.activeElement && document.activeElement.id;
+        const cursor = (document.activeElement && typeof document.activeElement.selectionStart === 'number')
+            ? document.activeElement.selectionStart
+            : null;
+
         container.innerHTML = tasks.map(renderTask).join('');
+
+        if (focusedId && String(focusedId).startsWith('join-search-')) {
+            const input = document.getElementById(focusedId);
+            if (input) {
+                input.focus();
+                if (cursor !== null) input.setSelectionRange(cursor, cursor);
+            }
+        }
+    }
+
+    const joinViewState = {};
+
+    function getJoinViewState(taskId) {
+        if (!joinViewState[taskId]) {
+            joinViewState[taskId] = { page: 1, pageSize: 10, account: '', status: '', keyword: '' };
+        }
+        return joinViewState[taskId];
+    }
+
+    function accountItemCounts(items) {
+        const counts = { success: 0, already: 0, pending: 0, failed: 0 };
+        (items || []).forEach(item => {
+            if (counts[item.status] !== undefined) counts[item.status] += 1;
+        });
+        return counts;
+    }
+
+    function accountCurrentGroup(state, running) {
+        if (running && state.current && state.current.target) {
+            const wait = state.current.waiting_seconds
+                ? `${state.current.flood ? '限流等待' : '等待'} ${state.current.waiting_seconds}s`
+                : '正在加入';
+            return { label: wait, target: state.current.target, live: true };
+        }
+        const last = (state.items || [])[(state.items || []).length - 1];
+        if (last) {
+            return {
+                label: '最近',
+                target: last.title ? `${last.target} · ${last.title}` : last.target,
+                live: false
+            };
+        }
+        return { label: '', target: '尚未开始', live: false };
+    }
+
+    function collectJoinRows(task) {
+        const rows = [];
+        Object.values(task.accounts || {}).forEach(state => {
+            (state.items || []).forEach(item => {
+                rows.push({
+                    account_id: state.account_id,
+                    target: item.target || '',
+                    title: item.title || '',
+                    status: item.status || 'failed',
+                    message: item.message || '',
+                    time: item.time || ''
+                });
+            });
+        });
+        rows.reverse();
+        return rows;
     }
 
     function renderTask(task) {
@@ -1707,35 +1878,55 @@
         const done = summary.done || 0;
         const percent = total ? Math.round((done / total) * 100) : 0;
         const running = task.status === 'running';
+        const accounts = Object.values(task.accounts || {});
+        const view = getJoinViewState(task.task_id);
 
-        const accountsHtml = Object.values(task.accounts || {}).map(state => {
-            const current = state.current;
-            let currentHtml = '';
-            if (running && current) {
-                currentHtml = current.waiting_seconds
-                    ? `<span style="color: var(--text-muted);">${current.flood ? '限流等待' : '等待'} ${current.waiting_seconds}s → ${escapeHtml(current.target)}</span>`
-                    : `<span style="color: var(--text-muted);"><span class="gm-spinner"></span> 正在加入 ${escapeHtml(current.target)}</span>`;
-            }
-
-            const items = (state.items || []).slice().reverse().map(item => `
-                <div class="gm-item-line">
-                    <span class="target">${escapeHtml(item.target)}${item.title ? ' · ' + escapeHtml(item.title) : ''}${item.status === 'failed' && item.message ? ` · <span style="color: var(--text-muted); font-weight: 400;">${escapeHtml(item.message)}</span>` : ''}</span>
-                    <span class="gm-tag ${item.status}" title="${escapeHtml(item.message)}">${STATUS_TEXT[item.status] || item.status}</span>
-                </div>
-            `).join('');
-
-            return `
-                <div class="gm-task-account">
-                    <div class="gm-task-account-head">
-                        <span>${escapeHtml(state.account_id)}</span>
-                        <span style="font-weight: 500; color: var(--text-secondary);">
-                            ${currentHtml || ACCOUNT_STATE_TEXT[state.status] || state.status}
-                        </span>
-                    </div>
-                    ${items || '<div class="gm-hint">尚无记录</div>'}
-                </div>
-            `;
+        const accountRows = accounts.map(state => {
+            const counts = accountItemCounts(state.items);
+            const current = accountCurrentGroup(state, running);
+            return `<tr>
+                <td>${escapeHtml(state.account_id)}</td>
+                <td class="join-current">
+                    ${current.label ? `<span class="join-current-label">${escapeHtml(current.label)}</span>` : ''}
+                    ${escapeHtml(current.target)}
+                </td>
+                <td><span class="gm-tag ${running && state.status === 'running' ? 'pending' : (state.status === 'completed' ? 'success' : state.status)}">${ACCOUNT_STATE_TEXT[state.status] || state.status}</span></td>
+                <td>${counts.success}</td>
+                <td>${counts.already}</td>
+                <td>${counts.pending}</td>
+                <td>${counts.failed}</td>
+            </tr>`;
         }).join('');
+
+        const allRows = collectJoinRows(task);
+        const filtered = allRows.filter(row => {
+            if (view.account && row.account_id !== view.account) return false;
+            if (view.status && row.status !== view.status) return false;
+            if (view.keyword) {
+                const needle = view.keyword.toLowerCase();
+                const text = `${row.target} ${row.title} ${row.message}`.toLowerCase();
+                if (!text.includes(needle)) return false;
+            }
+            return true;
+        });
+        const totalPages = Math.max(1, Math.ceil(filtered.length / view.pageSize));
+        if (view.page > totalPages) view.page = totalPages;
+        const start = (view.page - 1) * view.pageSize;
+        const pageRows = filtered.slice(start, start + view.pageSize);
+
+        const detailRows = pageRows.length ? pageRows.map(row => `
+            <tr>
+                <td>${escapeHtml(row.account_id)}</td>
+                <td>${escapeHtml(row.title ? `${row.target} · ${row.title}` : row.target)}</td>
+                <td><span class="gm-tag ${row.status}">${STATUS_TEXT[row.status] || row.status}</span></td>
+                <td>${escapeHtml(formatJoinTime(row.time))}</td>
+                <td style="color: var(--text-muted); max-width: 280px; word-break: break-word;">${row.status === 'failed' && row.message ? escapeHtml(row.message) : '—'}</td>
+            </tr>
+        `).join('') : `<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 24px;">暂无入群明细</td></tr>`;
+
+        const accountOptions = ['<option value="">全部账号</option>'].concat(
+            accounts.map(state => `<option value="${escapeHtml(state.account_id)}" ${view.account === state.account_id ? 'selected' : ''}>${escapeHtml(state.account_id)}</option>`)
+        ).join('');
 
         return `
             <div class="gm-task">
@@ -1766,9 +1957,111 @@
                     <span style="color: var(--danger-color);">失败 ${summary.failed || 0}</span>
                 </div>
 
-                ${accountsHtml}
+                <div class="join-table-wrap">
+                    <table class="join-table">
+                        <thead>
+                            <tr>
+                                <th>账号</th>
+                                <th>正在加入 / 最近目标</th>
+                                <th>状态</th>
+                                <th>成功</th>
+                                <th>已在群</th>
+                                <th>待批准</th>
+                                <th>失败</th>
+                            </tr>
+                        </thead>
+                        <tbody>${accountRows || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">暂无账号</td></tr>'}</tbody>
+                    </table>
+                </div>
+
+                <div class="join-toolbar">
+                    <select class="gm-select" onchange="setJoinFilter('${task.task_id}', 'account', this.value)">${accountOptions}</select>
+                    <select class="gm-select" onchange="setJoinFilter('${task.task_id}', 'status', this.value)">
+                        <option value="" ${!view.status ? 'selected' : ''}>全部状态</option>
+                        <option value="success" ${view.status === 'success' ? 'selected' : ''}>加入成功</option>
+                        <option value="already" ${view.status === 'already' ? 'selected' : ''}>已在群内</option>
+                        <option value="pending" ${view.status === 'pending' ? 'selected' : ''}>待批准</option>
+                        <option value="failed" ${view.status === 'failed' ? 'selected' : ''}>失败</option>
+                    </select>
+                    <input class="gm-input" id="join-search-${task.task_id}" style="min-width: 180px;" placeholder="搜索群组" value="${escapeHtml(view.keyword)}"
+                           oninput="setJoinFilter('${task.task_id}', 'keyword', this.value)">
+                </div>
+
+                <div class="join-table-wrap">
+                    <table class="join-table">
+                        <thead>
+                            <tr>
+                                <th>账号</th>
+                                <th>名称</th>
+                                <th>状态</th>
+                                <th>时间</th>
+                                <th>失败原因</th>
+                            </tr>
+                        </thead>
+                        <tbody>${detailRows}</tbody>
+                    </table>
+                </div>
+                ${renderJoinPager(task.task_id, filtered.length, totalPages)}
             </div>
         `;
+    }
+
+    function formatJoinTime(value) {
+        if (!value) return '—';
+        return String(value).replace('T', ' ').replace(/-/g, '/').split('.')[0];
+    }
+
+    function renderJoinPager(taskId, total, totalPages) {
+        const view = getJoinViewState(taskId);
+        if (!total) return '';
+        const pages = [];
+        const windowSize = 5;
+        let start = Math.max(1, view.page - 2);
+        let end = Math.min(totalPages, start + windowSize - 1);
+        start = Math.max(1, end - windowSize + 1);
+
+        pages.push(`<button type="button" ${view.page <= 1 ? 'disabled' : ''} onclick="gotoJoinPage('${taskId}', ${view.page - 1})">&lt;</button>`);
+        if (start > 1) {
+            pages.push(`<button type="button" onclick="gotoJoinPage('${taskId}', 1)">1</button>`);
+            if (start > 2) pages.push('<span>…</span>');
+        }
+        for (let i = start; i <= end; i++) {
+            pages.push(`<button type="button" class="${i === view.page ? 'active' : ''}" onclick="gotoJoinPage('${taskId}', ${i})">${i}</button>`);
+        }
+        if (end < totalPages) {
+            if (end < totalPages - 1) pages.push('<span>…</span>');
+            pages.push(`<button type="button" onclick="gotoJoinPage('${taskId}', ${totalPages})">${totalPages}</button>`);
+        }
+        pages.push(`<button type="button" ${view.page >= totalPages ? 'disabled' : ''} onclick="gotoJoinPage('${taskId}', ${view.page + 1})">&gt;</button>`);
+
+        return `<div class="join-pager">
+            <span>共 ${total} 条</span>
+            <select class="gm-select" onchange="changeJoinPageSize('${taskId}', this.value)">
+                <option value="10" ${view.pageSize === 10 ? 'selected' : ''}>10条/页</option>
+                <option value="20" ${view.pageSize === 20 ? 'selected' : ''}>20条/页</option>
+                <option value="50" ${view.pageSize === 50 ? 'selected' : ''}>50条/页</option>
+            </select>
+            <div class="join-pager-pages">${pages.join('')}</div>
+        </div>`;
+    }
+
+    function setJoinFilter(taskId, key, value) {
+        const view = getJoinViewState(taskId);
+        view[key] = value;
+        view.page = 1;
+        renderTasks();
+    }
+
+    function gotoJoinPage(taskId, page) {
+        getJoinViewState(taskId).page = Math.max(1, page);
+        renderTasks();
+    }
+
+    function changeJoinPageSize(taskId, size) {
+        const view = getJoinViewState(taskId);
+        view.pageSize = parseInt(size, 10) || 10;
+        view.page = 1;
+        renderTasks();
     }
 
     function updateRunningBadge() {
