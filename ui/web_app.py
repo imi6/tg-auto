@@ -2686,12 +2686,32 @@ class WebApp:
                 "records": store.list_records(job_id=job_id or None, status=status or None, limit=limit),
                 "statistics": store.stats(job_id=job_id or None)
             }
+
+        @self.app.get("/api/scheduled-messages/target-stats")
+        async def list_send_target_stats(request: Request, job_id: str = ""):
+            user = self.get_current_user(request)
+            engine = MonitorEngine()
+            targets = engine.list_target_stats(job_id or None)
+            return {
+                "success": True,
+                "targets": targets,
+                "statistics": {
+                    "total": len(targets),
+                    "success": sum(1 for item in targets if item.get('last_status') == 'success' and not item.get('removed')),
+                    "failed": sum(1 for item in targets if item.get('last_status') == 'failed' and not item.get('removed')),
+                    "skipped": sum(1 for item in targets if item.get('last_status') == 'skipped' and not item.get('removed')),
+                    "waiting": sum(1 for item in targets if item.get('last_status') == 'waiting' and not item.get('removed')),
+                    "removed": sum(1 for item in targets if item.get('removed')),
+                    "messages_sent": sum(int(item.get('success') or 0) for item in targets),
+                }
+            }
         
         @self.app.delete("/api/scheduled-messages/records")
         async def clear_send_records(request: Request, job_id: str = ""):
             user = self.get_current_user(request)
             
             removed = SendRecordStore().clear(job_id=job_id or None)
+            MonitorEngine().clear_target_stats(job_id or None)
             return {"success": True, "removed": removed, "message": f"已清理 {removed} 条发送记录"}
         
         @self.app.get("/api/cron-examples")

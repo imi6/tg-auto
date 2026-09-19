@@ -71,7 +71,7 @@ class BatchTaskManager:
         """执行单条操作，返回带 status 的结果字典
 
         status 取 models.task 中的常量；返回 STATUS_FLOOD 时需附带 wait_seconds，
-        基类会按 max_flood_wait 决定等待重试还是中止该账号。
+        基类会等待限流结束并重试当前目标，不会因此中止整个账号。
         """
         raise NotImplementedError
 
@@ -299,6 +299,9 @@ class BatchTaskManager:
                 state['status'] = ACCOUNT_ABORTED
                 state['current'] = None
                 await self._notify(task)
+                self.logger.warning(
+                    f"账号 {account_id} 遇到不可恢复错误，中止剩余目标: {result.get('message')}"
+                )
                 return
 
         state['status'] = ACCOUNT_COMPLETED
@@ -308,49 +311,53 @@ class BatchTaskManager:
     async def _execute_with_flood_retry(
         self, task_id: str, account_id: str, client, item: Dict[str, Any], label: str
     ) -> Optional[Dict[str, Any]]:
-        """执行单条操作并处理限流，返回 None 表示该账号已终止（取消或超过等待上限）"""
+        """执行单条操作并处理限流。
+
+        触发 FloodWait 时等待结束后重试当前目标，可多次等待。
+        返回 None 只表示任务被取消，限流本身不会中止账号剩余目标。
+        """
         task = self.tasks[task_id]
         state = task['accounts'][account_id]
-        options = task['options']
+        flood_rounds = 0
 
-        try:
-            result = await self.execute_item(client, item, task)
-        except Exception as e:
-            self.logger.error(f"{self.task_label} {task_id} 账号 {account_id} 执行 {label} 异常: {e}")
-            return {'status': STATUS_FAILED, 'message': str(e) or e.__class__.__name__}
+        while True:
+            if task_id in self._cancelled:
+                state['status'] = ACCOUNT_CANCELLED
+                await self._notify(task)
+                return None
 
-        if result.get('status') != STATUS_FLOOD:
-            return result
+            try:
+                result = await self.execute_item(client, item, task)
+            except Exception as e:
+                self.logger.error(f"{self.task_label} {task_id} 账号 {account_id} 执行 {label} 异常: {e}")
+                return {'status': STATUS_FAILED, 'message': str(e) or e.__class__.__name__}
 
-        wait_seconds = int(result.get('wait_seconds', 0) or 0)
-        if wait_seconds > options['max_flood_wait']:
-            self._record(task, account_id, item, {
-                'status': STATUS_FAILED,
-                'message': f"触发频率限制需等待 {wait_seconds} 秒，超过上限，已中止该账号"
-            })
-            state['status'] = ACCOUNT_ABORTED
-            state['current'] = None
+            if result.get('status') != STATUS_FLOOD:
+                return result
+
+            wait_seconds = int(result.get('wait_seconds', 0) or 0)
+            if wait_seconds <= 0:
+                wait_seconds = 30
+
+            flood_rounds += 1
+            if flood_rounds > 8:
+                return {
+                    'status': STATUS_FAILED,
+                    'message': f'同一目标连续限流 {flood_rounds - 1} 次，已跳过，继续后续加群'
+                }
+
+            self.logger.warning(
+                f"账号 {account_id} 触发限流，等待 {wait_seconds} 秒后重试 {label}"
+                + (f"（第 {flood_rounds} 次）" if flood_rounds > 1 else "")
+            )
+            state['current'] = {'target': label, 'waiting_seconds': wait_seconds, 'flood': True}
             await self._notify(task)
-            return None
 
-        self.logger.warning(f"账号 {account_id} 触发限流，等待 {wait_seconds} 秒后重试")
-        state['current'] = {'target': label, 'waiting_seconds': wait_seconds, 'flood': True}
-        await self._notify(task, persist=False)
-
-        if not await self._sleep_cancellable(task_id, wait_seconds):
-            state['status'] = ACCOUNT_CANCELLED
-            await self._notify(task)
-            return None
-
-        try:
-            retried = await self.execute_item(client, item, task)
-        except Exception as e:
-            return {'status': STATUS_FAILED, 'message': str(e) or e.__class__.__name__}
-
-        if retried.get('status') == STATUS_FLOOD:
-            return {'status': STATUS_FAILED, 'message': '重试后仍被限流'}
-
-        return retried
+            # Telegram 的 seconds 是最短等待，多留 2 秒再动手，减少刚等到又被限
+            if not await self._sleep_cancellable(task_id, wait_seconds + 2):
+                state['status'] = ACCOUNT_CANCELLED
+                await self._notify(task)
+                return None
 
     async def _prepare_client(self, account_id: str):
         account = self.account_manager.get_account(account_id)

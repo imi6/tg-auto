@@ -823,7 +823,9 @@
                 </div>
             </div>
             <div class="gm-hint">
-                同一账号内串行加群并按上述区间随机延迟，多个账号之间并行执行。间隔过短会显著提高触发风控的概率，建议不低于 30 秒。
+                同一账号内串行加群并按上述区间随机延迟，多个账号之间并行执行。
+                触发 Telegram 限流时会自动等到结束后继续加后面的群，不会整单中止。
+                间隔过短会显著提高触发风控的概率，建议不低于 30 秒。
             </div>
         </div>
         <div class="gm-modal-footer">
@@ -1717,7 +1719,7 @@
 
             const items = (state.items || []).slice().reverse().map(item => `
                 <div class="gm-item-line">
-                    <span class="target">${escapeHtml(item.target)}${item.title ? ' · ' + escapeHtml(item.title) : ''}</span>
+                    <span class="target">${escapeHtml(item.target)}${item.title ? ' · ' + escapeHtml(item.title) : ''}${item.status === 'failed' && item.message ? ` · <span style="color: var(--text-muted); font-weight: 400;">${escapeHtml(item.message)}</span>` : ''}</span>
                     <span class="gm-tag ${item.status}" title="${escapeHtml(item.message)}">${STATUS_TEXT[item.status] || item.status}</span>
                 </div>
             `).join('');

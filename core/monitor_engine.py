@@ -1052,11 +1052,139 @@ class MonitorEngine(metaclass=Singleton):
                 item['name'] = self.default_job_name(
                     item.get('message', ''), item.get('use_ai', False), item.get('ai_prompt') or ''
                 )
+            item.pop('target_stats', None)
             item['next_run_at'] = self.get_next_run_at(job_id) if job_id else None
             item['running'] = bool(job_id and job_id in self._running_scheduled_jobs)
             item['progress'] = self.get_send_progress(job_id) if job_id else None
             result.append(item)
         return result
+
+    def _touch_target_stat(self, message_config: dict, target_id: int, status: str,
+                           error: str = '', title: str = ''):
+        """按目标累计成功/失败次数，供发送记录表格展示"""
+        stats = message_config.setdefault('target_stats', {})
+        key = str(target_id)
+        item = stats.get(key)
+        if not item:
+            item = {
+                'target_id': target_id,
+                'title': '',
+                'success': 0,
+                'failed': 0,
+                'skipped': 0,
+                'last_status': 'waiting',
+                'last_time': None,
+                'last_error': None,
+            }
+            stats[key] = item
+
+        if title:
+            item['title'] = title
+        elif not item.get('title'):
+            item['title'] = self._target_title(message_config, target_id)
+
+        item['target_id'] = target_id
+        item['last_status'] = status
+        item['last_time'] = datetime.now().isoformat(timespec='seconds')
+        if status == 'success':
+            item['success'] = int(item.get('success') or 0) + 1
+            item['last_error'] = None
+        elif status == 'failed':
+            item['failed'] = int(item.get('failed') or 0) + 1
+            item['last_error'] = error or None
+        elif status == 'skipped':
+            item['skipped'] = int(item.get('skipped') or 0) + 1
+            item['last_error'] = error or None
+
+        return item
+
+    def list_target_stats(self, job_id: Optional[str] = None) -> List[dict]:
+        jobs = self.scheduled_messages
+        if job_id:
+            jobs = [message for message in jobs if message.get('job_id') == job_id]
+
+        rows = []
+        for message in jobs:
+            rows.extend(self._build_target_stat_rows(message))
+        return rows
+
+    def clear_target_stats(self, job_id: Optional[str] = None) -> None:
+        changed = False
+        for message in self.scheduled_messages:
+            if job_id and message.get('job_id') != job_id:
+                continue
+            if message.get('target_stats'):
+                message['target_stats'] = {}
+                changed = True
+        if changed:
+            self._save_scheduled_messages()
+
+    def _build_target_stat_rows(self, message_config: dict) -> List[dict]:
+        current = self.get_message_targets(message_config)
+        current_set = set(current)
+        stats = message_config.get('target_stats') or {}
+        titles = message_config.get('target_titles') or {}
+        excluded = message_config.get('excluded_targets') or []
+        job_id = message_config.get('job_id')
+        job_name = (message_config.get('name') or '').strip() or self.default_job_name(
+            message_config.get('message', ''),
+            message_config.get('use_ai', False),
+            message_config.get('ai_prompt') or ''
+        )
+
+        excluded_map = {}
+        for item in excluded:
+            try:
+                excluded_map[int(item.get('target_id'))] = item
+            except (TypeError, ValueError):
+                continue
+
+        ordered = []
+        seen = set()
+        for target_id in current:
+            ordered.append(target_id)
+            seen.add(target_id)
+        for target_id in excluded_map:
+            if target_id not in seen:
+                ordered.append(target_id)
+                seen.add(target_id)
+        for key, item in stats.items():
+            try:
+                target_id = int(item.get('target_id', key))
+            except (TypeError, ValueError):
+                continue
+            if target_id not in seen:
+                ordered.append(target_id)
+                seen.add(target_id)
+
+        rows = []
+        for target_id in ordered:
+            raw = stats.get(str(target_id)) or stats.get(target_id) or {}
+            excluded_item = excluded_map.get(target_id) or {}
+            title = (
+                raw.get('title')
+                or excluded_item.get('title')
+                or titles.get(str(target_id))
+                or titles.get(target_id)
+                or ''
+            )
+            last_error = raw.get('last_error') or excluded_item.get('error')
+            last_time = raw.get('last_time') or excluded_item.get('removed_at')
+            last_status = raw.get('last_status') or ('skipped' if excluded_item else 'waiting')
+            rows.append({
+                'job_id': job_id,
+                'job_name': job_name,
+                'target_id': target_id,
+                'title': title,
+                'success': int(raw.get('success') or 0),
+                'failed': int(raw.get('failed') or 0),
+                'skipped': int(raw.get('skipped') or 0),
+                'last_status': last_status,
+                'last_time': last_time,
+                'last_error': last_error,
+                'removed': target_id not in current_set,
+            })
+        return rows
 
     @staticmethod
     def get_message_targets(message_config: dict) -> List[int]:
@@ -1275,6 +1403,7 @@ class MonitorEngine(metaclass=Singleton):
                 if PrecheckService.is_blocking(check['code']):
                     self.logger.info(f"⏭️ 跳过目标 {title or target_id}: {check['reason']}")
                     self._collect_skip(summary, target_id, check['reason'], title)
+                    self._touch_target_stat(message_config, target_id, 'skipped', check['reason'], title)
                     publish()
                     continue
 
@@ -1286,6 +1415,7 @@ class MonitorEngine(metaclass=Singleton):
                 await account.client.send_message(target_id, message_text)
                 summary['success'] += 1
                 sent_any = True
+                self._touch_target_stat(message_config, target_id, 'success', '', title)
                 publish()
 
             except Exception as send_error:
@@ -1295,6 +1425,7 @@ class MonitorEngine(metaclass=Singleton):
                     if wait_seconds > 300:
                         self.logger.error(f"⛔ 触发限流需等待 {wait_seconds} 秒，中止本轮群发: {job_id}")
                         self._collect_failure(summary, target_id, f"触发限流，需等待 {wait_seconds} 秒，已中止本轮", title)
+                        self._touch_target_stat(message_config, target_id, 'failed', f"触发限流，需等待 {wait_seconds} 秒，已中止本轮", title)
                         summary['stopped'] = True
                         publish()
                         break
@@ -1305,6 +1436,7 @@ class MonitorEngine(metaclass=Singleton):
                         await account.client.send_message(target_id, message_text)
                         summary['success'] += 1
                         sent_any = True
+                        self._touch_target_stat(message_config, target_id, 'success', '', title)
                         publish()
                         continue
                     except Exception as retry_error:
@@ -1316,6 +1448,7 @@ class MonitorEngine(metaclass=Singleton):
                 if skip_reason:
                     self.logger.info(f"⏭️ 跳过目标 {title or target_id}: {skip_reason}")
                     self._collect_skip(summary, target_id, skip_reason, title)
+                    self._touch_target_stat(message_config, target_id, 'skipped', skip_reason, title)
                     publish()
                     continue
 
@@ -1328,6 +1461,7 @@ class MonitorEngine(metaclass=Singleton):
                         )
                     self.logger.error(f"⛔ 账号 {account_id} 触发风控，中止本轮群发: {reason}")
                     self._collect_failure(summary, target_id, f"账号触发风控: {reason}", title)
+                    self._touch_target_stat(message_config, target_id, 'failed', f"账号触发风控: {reason}", title)
                     summary['stopped'] = True
                     summary['account_limited'] = True
                     publish()
@@ -1335,6 +1469,7 @@ class MonitorEngine(metaclass=Singleton):
 
                 self.logger.error(f"❌ 发送失败 {title or target_id}: {reason}")
                 self._collect_failure(summary, target_id, reason, title)
+                self._touch_target_stat(message_config, target_id, 'failed', reason, title)
                 publish()
 
         return summary

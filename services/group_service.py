@@ -43,6 +43,7 @@ UsernameNotOccupiedError = _error('UsernameNotOccupiedError')
 UsernameInvalidError = _error('UsernameInvalidError')
 UserBannedInChannelError = _error('UserBannedInChannelError')
 UserDeactivatedBanError = _error('UserDeactivatedBanError')
+PeerFloodError = _error('PeerFloodError')
 
 _INVITE_PATTERN = re.compile(r'^(?:\+|joinchat/)(?P<hash>[\w-]+)$', re.IGNORECASE)
 _USERNAME_PATTERN = re.compile(r'^[a-zA-Z][\w]{2,31}$')
@@ -283,6 +284,13 @@ class GroupService:
                 'status': STATUS_FLOOD,
                 'wait_seconds': int(getattr(e, 'seconds', 0) or 0),
                 'message': f"触发频率限制，需等待 {int(getattr(e, 'seconds', 0) or 0)} 秒"
+            }
+        except PeerFloodError as e:
+            seconds = int(getattr(e, 'seconds', 0) or 3600)
+            return {
+                'status': STATUS_FLOOD,
+                'wait_seconds': seconds,
+                'message': f"账号操作过于频繁，需等待 {seconds} 秒"
             }
         except UserDeactivatedBanError:
             return {'status': STATUS_FAILED, 'message': '账号已被封禁', 'fatal': True}

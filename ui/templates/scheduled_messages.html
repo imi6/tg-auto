@@ -35,6 +35,160 @@
         width: auto;
     }
 
+    .record-tabs {
+        display: flex;
+        gap: 4px;
+        margin-bottom: 14px;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .record-tab {
+        border: none;
+        background: none;
+        padding: 10px 16px;
+        font-size: 13px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+    }
+
+    .record-tab.active {
+        color: var(--primary-color);
+        font-weight: 600;
+        border-bottom-color: var(--primary-color);
+    }
+
+    .target-table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        background: var(--bg-card);
+    }
+
+    .target-record-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .target-record-table th,
+    .target-record-table td {
+        padding: 12px 14px;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+        vertical-align: middle;
+    }
+
+    .target-record-table th {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-muted);
+        background: var(--bg-secondary);
+        white-space: nowrap;
+    }
+
+    .target-record-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .target-record-table tbody tr:hover {
+        background: var(--bg-hover);
+    }
+
+    .target-name {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 180px;
+        color: var(--text-primary);
+        font-weight: 500;
+        word-break: break-word;
+    }
+
+    .removed-badge {
+        flex-shrink: 0;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-muted);
+        background: var(--bg-hover);
+        border: 1px solid var(--border-color);
+    }
+
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 52px;
+        height: 24px;
+        padding: 0 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .status-pill.success {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success-color);
+    }
+
+    .status-pill.failed {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--danger-color);
+    }
+
+    .status-pill.skipped {
+        background: var(--bg-hover);
+        color: var(--text-secondary);
+    }
+
+    .status-pill.waiting {
+        background: rgba(99, 102, 241, 0.12);
+        color: #6366f1;
+    }
+
+    .record-pager {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .record-pager-pages {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .record-pager-pages button {
+        min-width: 32px;
+        height: 32px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-card);
+        color: var(--text-secondary);
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+    }
+
+    .record-pager-pages button.active {
+        background: var(--primary-color);
+        border-color: var(--primary-color);
+        color: #fff;
+    }
+
+    .record-pager-pages button:disabled {
+        opacity: 0.45;
+        cursor: default;
+    }
+
     .record-item {
         display: flex;
         gap: 12px;
@@ -875,26 +1029,46 @@
 </div>
 
 <div class="modal" id="recordsModal">
-    <div class="modal-content" style="max-width: 860px;">
+    <div class="modal-content" style="max-width: 1080px;">
         <div class="modal-header">
-            <h3 class="modal-title" id="recordsTitle">发送记录</h3>
+            <h3 class="modal-title" id="recordsTitle">目标列表</h3>
             <button class="modal-close" onclick="closeRecordsModal()">
                 <i class="bi bi-x"></i>
             </button>
         </div>
 
         <div class="modal-body">
+            <div class="record-tabs">
+                <button type="button" class="record-tab active" id="records-tab-targets" onclick="switchRecordsTab('targets')">按目标</button>
+                <button type="button" class="record-tab" id="records-tab-rounds" onclick="switchRecordsTab('rounds')">按轮次</button>
+            </div>
+
             <div class="record-summary" id="record-summary"></div>
 
-            <div class="record-toolbar">
-                <select class="form-select" id="record-status-filter" onchange="loadRecords()">
+            <div class="record-toolbar" id="target-record-toolbar">
+                <input type="text" class="form-input" id="target-record-search" placeholder="搜索群组名称" oninput="onTargetRecordSearch()" style="max-width: 220px;">
+                <select class="form-select" id="target-record-filter" onchange="onTargetRecordFilter()">
+                    <option value="">全部状态</option>
+                    <option value="success">成功</option>
+                    <option value="failed">失败</option>
+                    <option value="skipped">跳过</option>
+                    <option value="waiting">等待中</option>
+                    <option value="removed">已移除</option>
+                </select>
+                <button class="btn btn-sm btn-secondary" onclick="loadRecords()">
+                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                </button>
+            </div>
+
+            <div class="record-toolbar" id="round-record-toolbar" style="display: none;">
+                <select class="form-select" id="record-status-filter" onchange="loadRoundRecords()">
                     <option value="">全部状态</option>
                     <option value="success">全部成功</option>
                     <option value="partial">部分失败</option>
                     <option value="failed">失败</option>
                     <option value="skipped">跳过</option>
                 </select>
-                <button class="btn btn-sm btn-secondary" onclick="loadRecords()">
+                <button class="btn btn-sm btn-secondary" onclick="loadRoundRecords()">
                     <i class="bi bi-arrow-clockwise"></i> 刷新
                 </button>
                 <button class="btn btn-sm btn-secondary" onclick="clearRecords()">
@@ -905,6 +1079,7 @@
             <div id="records-list">
                 <div class="record-empty">加载中...</div>
             </div>
+            <div class="record-pager" id="record-pager" style="display: none;"></div>
         </div>
     </div>
 </div>
@@ -1306,8 +1481,13 @@
     }
     
     let recordsJobId = null;
+    let recordsTab = 'targets';
+    let targetRecordRows = [];
+    let targetRecordPage = 1;
+    let targetRecordPageSize = 10;
+    let targetRecordSearchTimer = null;
 
-    const RECORD_LABEL = { success: '成功', partial: '部分', failed: '失败', skipped: '跳过' };
+    const RECORD_LABEL = { success: '成功', partial: '部分', failed: '失败', skipped: '跳过', waiting: '等待中' };
     const STAGE_LABEL = {
         config: '配置', account: '账号', ai: 'AI 生成', content: '内容',
         entity: '目标', target: '目标', send: '发送',
@@ -1316,9 +1496,14 @@
 
     function showRecordsModal(jobId) {
         recordsJobId = jobId || null;
+        recordsTab = 'targets';
+        targetRecordPage = 1;
         document.getElementById('recordsTitle').textContent =
-            recordsJobId ? '该条消息的发送记录' : '发送记录';
+            recordsJobId ? '目标列表' : '全部任务的目标列表';
+        document.getElementById('target-record-filter').value = '';
+        document.getElementById('target-record-search').value = '';
         document.getElementById('record-status-filter').value = '';
+        switchRecordsTab('targets', true);
         document.getElementById('recordsModal').classList.add('show');
         loadRecords();
     }
@@ -1326,9 +1511,190 @@
     function closeRecordsModal() {
         document.getElementById('recordsModal').classList.remove('show');
         recordsJobId = null;
+        targetRecordRows = [];
+    }
+
+    function switchRecordsTab(tab, skipLoad) {
+        recordsTab = tab;
+        document.getElementById('records-tab-targets').classList.toggle('active', tab === 'targets');
+        document.getElementById('records-tab-rounds').classList.toggle('active', tab === 'rounds');
+        document.getElementById('target-record-toolbar').style.display = tab === 'targets' ? 'flex' : 'none';
+        document.getElementById('round-record-toolbar').style.display = tab === 'rounds' ? 'flex' : 'none';
+        document.getElementById('record-pager').style.display = tab === 'targets' ? 'flex' : 'none';
+        if (!skipLoad) loadRecords();
     }
 
     async function loadRecords() {
+        if (recordsTab === 'rounds') {
+            await loadRoundRecords();
+            return;
+        }
+        await loadTargetRecords();
+    }
+
+    async function loadTargetRecords() {
+        const list = document.getElementById('records-list');
+        const params = new URLSearchParams();
+        if (recordsJobId) params.set('job_id', recordsJobId);
+        list.innerHTML = '<div class="record-empty">加载中...</div>';
+        document.getElementById('record-pager').style.display = 'none';
+
+        try {
+            const response = await fetch(`/api/scheduled-messages/target-stats?${params}`);
+            const data = await response.json();
+            targetRecordRows = data.targets || [];
+            renderTargetSummary(data.statistics || {});
+            renderTargetRecords();
+        } catch (error) {
+            console.error('获取目标列表失败:', error);
+            list.innerHTML = '<div class="record-empty">获取目标列表失败</div>';
+        }
+    }
+
+    function onTargetRecordSearch() {
+        clearTimeout(targetRecordSearchTimer);
+        targetRecordSearchTimer = setTimeout(() => {
+            targetRecordPage = 1;
+            renderTargetRecords();
+        }, 200);
+    }
+
+    function onTargetRecordFilter() {
+        targetRecordPage = 1;
+        renderTargetRecords();
+    }
+
+    function filteredTargetRows() {
+        const keyword = (document.getElementById('target-record-search').value || '').trim().toLowerCase();
+        const status = document.getElementById('target-record-filter').value;
+        return targetRecordRows.filter(row => {
+            if (status === 'removed') return !!row.removed;
+            if (status && row.last_status !== status) return false;
+            if (!keyword) return true;
+            const title = String(row.title || '');
+            const jobName = String(row.job_name || '');
+            return title.toLowerCase().includes(keyword)
+                || String(row.target_id).includes(keyword)
+                || jobName.toLowerCase().includes(keyword);
+        });
+    }
+
+    function renderTargetSummary(stats) {
+        document.getElementById('record-summary').innerHTML = `
+            <span>目标数<b>${stats.total || 0}</b></span>
+            <span style="color: var(--success-color);">最近成功<b>${stats.success || 0}</b></span>
+            <span style="color: var(--danger-color);">最近失败<b>${stats.failed || 0}</b></span>
+            <span style="color: var(--text-muted);">跳过<b>${stats.skipped || 0}</b></span>
+            <span style="color: #6366f1;">等待中<b>${stats.waiting || 0}</b></span>
+            <span>已移除<b>${stats.removed || 0}</b></span>
+            <span>累计发出<b>${stats.messages_sent || 0}</b> 条</span>
+        `;
+    }
+
+    function renderTargetRecords() {
+        const list = document.getElementById('records-list');
+        const rows = filteredTargetRows();
+        if (!rows.length) {
+            list.innerHTML = '<div class="record-empty">暂无目标记录。发送过一轮后，这里会按群组列出成功和失败次数</div>';
+            document.getElementById('record-pager').style.display = 'none';
+            return;
+        }
+
+        const totalPages = Math.max(1, Math.ceil(rows.length / targetRecordPageSize));
+        if (targetRecordPage > totalPages) targetRecordPage = totalPages;
+        const start = (targetRecordPage - 1) * targetRecordPageSize;
+        const pageRows = rows.slice(start, start + targetRecordPageSize);
+        const showJob = !recordsJobId;
+
+        list.innerHTML = `
+            <div class="target-table-wrap">
+                <table class="target-record-table">
+                    <thead>
+                        <tr>
+                            ${showJob ? '<th>任务</th>' : ''}
+                            <th>名称</th>
+                            <th>最近状态</th>
+                            <th>成功次数</th>
+                            <th>失败次数</th>
+                            <th>执行时间</th>
+                            <th>最近失败原因</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${pageRows.map(row => `
+                            <tr>
+                                ${showJob ? `<td>${escapeHtml(row.job_name || '定时消息')}</td>` : ''}
+                                <td>
+                                    <div class="target-name">
+                                        <span>${escapeHtml(row.title || row.target_id)}</span>
+                                        ${row.removed ? '<span class="removed-badge">已移除</span>' : ''}
+                                    </div>
+                                </td>
+                                <td><span class="status-pill ${row.last_status || 'waiting'}">${RECORD_LABEL[row.last_status] || row.last_status || '等待中'}</span></td>
+                                <td>${row.success || 0}</td>
+                                <td>${row.failed || 0}</td>
+                                <td>${escapeHtml(formatRecordTime(row.last_time))}</td>
+                                <td style="color: var(--text-muted); max-width: 280px; word-break: break-word;">${row.last_error ? escapeHtml(localizeError(row.last_error)) : '—'}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+        renderTargetPager(rows.length, totalPages);
+    }
+
+    function formatRecordTime(value) {
+        if (!value) return '—';
+        return String(value).replace('T', ' ').replace(/-/g, '/');
+    }
+
+    function renderTargetPager(total, totalPages) {
+        const pager = document.getElementById('record-pager');
+        const pages = [];
+        const windowSize = 5;
+        let start = Math.max(1, targetRecordPage - 2);
+        let end = Math.min(totalPages, start + windowSize - 1);
+        start = Math.max(1, end - windowSize + 1);
+
+        pages.push(`<button type="button" ${targetRecordPage <= 1 ? 'disabled' : ''} onclick="gotoTargetRecordPage(${targetRecordPage - 1})">&lt;</button>`);
+        if (start > 1) {
+            pages.push(`<button type="button" onclick="gotoTargetRecordPage(1)">1</button>`);
+            if (start > 2) pages.push('<span>…</span>');
+        }
+        for (let i = start; i <= end; i++) {
+            pages.push(`<button type="button" class="${i === targetRecordPage ? 'active' : ''}" onclick="gotoTargetRecordPage(${i})">${i}</button>`);
+        }
+        if (end < totalPages) {
+            if (end < totalPages - 1) pages.push('<span>…</span>');
+            pages.push(`<button type="button" onclick="gotoTargetRecordPage(${totalPages})">${totalPages}</button>`);
+        }
+        pages.push(`<button type="button" ${targetRecordPage >= totalPages ? 'disabled' : ''} onclick="gotoTargetRecordPage(${targetRecordPage + 1})">&gt;</button>`);
+
+        pager.style.display = 'flex';
+        pager.innerHTML = `
+            <span>共 ${total} 条</span>
+            <select class="form-select" onchange="changeTargetRecordPageSize(this.value)">
+                <option value="10" ${targetRecordPageSize === 10 ? 'selected' : ''}>10条/页</option>
+                <option value="20" ${targetRecordPageSize === 20 ? 'selected' : ''}>20条/页</option>
+                <option value="50" ${targetRecordPageSize === 50 ? 'selected' : ''}>50条/页</option>
+            </select>
+            <div class="record-pager-pages">${pages.join('')}</div>
+        `;
+    }
+
+    function gotoTargetRecordPage(page) {
+        targetRecordPage = Math.max(1, page);
+        renderTargetRecords();
+    }
+
+    function changeTargetRecordPageSize(size) {
+        targetRecordPageSize = parseInt(size, 10) || 10;
+        targetRecordPage = 1;
+        renderTargetRecords();
+    }
+
+    async function loadRoundRecords() {
         const list = document.getElementById('records-list');
         const params = new URLSearchParams({ limit: '200' });
         if (recordsJobId) params.set('job_id', recordsJobId);
@@ -1337,6 +1703,7 @@
         if (status) params.set('status', status);
 
         list.innerHTML = '<div class="record-empty">加载中...</div>';
+        document.getElementById('record-pager').style.display = 'none';
 
         try {
             const response = await fetch(`/api/scheduled-messages/records?${params}`);
