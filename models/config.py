@@ -167,6 +167,12 @@ class ScheduledMessageConfig:
     random_offset: int = 0
     delete_after_sending: bool = False
     account_id: Optional[str] = None
+    # 一条任务可以绑多个号，为空时退回到 account_id
+    account_ids: List[str] = field(default_factory=list)
+    # 轮询换号时额外再等的秒数，0 表示只使用 send_interval
+    account_stagger: float = 0
+    # 多条任务同一时刻触发时，后启动的任务再错开的秒数
+    job_stagger: float = 30
     max_executions: Optional[int] = None
     execution_count: int = 0
     use_ai: bool = False
@@ -186,6 +192,10 @@ class ScheduledMessageConfig:
             self.target_ids = [self.target_id]
         if self.target_ids and not self.target_id:
             self.target_id = self.target_ids[0]
+        if self.account_id and self.account_id not in self.account_ids:
+            self.account_ids.insert(0, self.account_id)
+        if self.account_ids and not self.account_id:
+            self.account_id = self.account_ids[0]
     
     def is_execution_limit_reached(self) -> bool:
         if self.max_executions is None:

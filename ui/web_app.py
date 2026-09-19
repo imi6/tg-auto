@@ -379,6 +379,35 @@ class WebApp:
             raise HTTPException(status_code=400, detail="发送间隔不能为负数")
 
         return interval
+
+    @staticmethod
+    def parse_job_account_ids(payload: Dict[str, Any]) -> List[str]:
+        raw_values = payload.get("account_ids")
+        if not isinstance(raw_values, list) or not raw_values:
+            raw_values = [payload.get("account_id", "")]
+
+        account_ids: List[str] = []
+        for raw in raw_values:
+            account_id = str(raw or "").strip()
+            if account_id and account_id not in account_ids:
+                account_ids.append(account_id)
+
+        if not account_ids:
+            raise HTTPException(status_code=400, detail="请至少选择一个发送账号")
+        return account_ids
+
+    @staticmethod
+    def parse_stagger_seconds(payload: Dict[str, Any], key: str, default: float) -> float:
+        raw = payload.get(key, default)
+        if raw in (None, ""):
+            return default
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{key} 必须是数字")
+        if value < 0:
+            raise HTTPException(status_code=400, detail=f"{key} 不能为负数")
+        return value
     
     def borrow_account_credentials(self) -> Optional[tuple]:
         """借用任一已有账号的 API 凭据
@@ -2601,8 +2630,7 @@ class WebApp:
                     if not is_valid:
                         raise HTTPException(status_code=400, detail=f"Cron表达式错误: {error_msg}")
                 
-                if not message.get("account_id"):
-                    raise HTTPException(status_code=400, detail="账号ID不能为空")
+                account_ids = self.parse_job_account_ids(message)
                 if not message.get("message") and not message.get("use_ai"):
                     raise HTTPException(status_code=400, detail="消息内容或AI提示词不能为空")
                 
@@ -2623,7 +2651,10 @@ class WebApp:
                     cron=schedule_expr,
                     random_offset=message.get("random_delay", message.get("random_offset", 0)),
                     delete_after_sending=message.get("delete_after_send", message.get("delete_after_sending", False)),
-                    account_id=message.get("account_id"),
+                    account_id=account_ids[0],
+                    account_ids=account_ids,
+                    account_stagger=self.parse_stagger_seconds(message, "account_stagger", 0),
+                    job_stagger=self.parse_stagger_seconds(message, "job_stagger", 30),
                     max_executions=max_executions,
                     execution_count=0,
                     use_ai=message.get("use_ai", False),
@@ -2765,8 +2796,12 @@ class WebApp:
                         
                         new_cron = data.get('schedule', data.get('cron', msg.get('cron') or msg.get('schedule')))
                         schedule_mode = data.get('schedule_mode', msg.get('schedule_mode', 'cron'))
+                        account_ids = self.parse_job_account_ids(data)
                         engine.scheduled_messages[i].update({
-                            'account_id': data.get('account_id'),
+                            'account_id': account_ids[0],
+                            'account_ids': account_ids,
+                            'account_stagger': self.parse_stagger_seconds(data, "account_stagger", msg.get('account_stagger', 0)),
+                            'job_stagger': self.parse_stagger_seconds(data, "job_stagger", msg.get('job_stagger', 30)),
                             'message': data.get('message', ''),
                             'channel_id': target_ids[0],
                             'target_id': target_ids[0],

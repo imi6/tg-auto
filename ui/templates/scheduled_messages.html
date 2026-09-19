@@ -369,6 +369,58 @@
         flex-shrink: 0;
     }
 
+    .account-check-list {
+        max-height: 180px;
+        overflow-y: auto;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        background: var(--bg-secondary);
+    }
+
+    .account-check-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        cursor: pointer;
+        border-bottom: 1px solid var(--border-color);
+        font-size: 13px;
+        color: var(--text-primary);
+        margin: 0;
+    }
+
+    .account-check-item:last-child {
+        border-bottom: none;
+    }
+
+    .account-check-item:hover {
+        background: var(--bg-tertiary);
+    }
+
+    .account-check-item input {
+        flex-shrink: 0;
+        cursor: pointer;
+    }
+
+    .account-check-empty {
+        padding: 16px;
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 13px;
+    }
+
+    .stagger-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+    }
+
+    @media (max-width: 640px) {
+        .stagger-row {
+            grid-template-columns: 1fr;
+        }
+    }
+
     .target-list {
         max-height: 240px;
         overflow-y: auto;
@@ -1103,10 +1155,16 @@
         <div class="modal-body">
             <form id="messageForm">
                 <div class="form-group">
-                    <label class="form-label">选择账号</label>
-                    <select class="form-select" id="account-selector" required onchange="onAccountChange()">
-                        <option value="">加载账号中...</option>
-                    </select>
+                    <label class="form-label">
+                        发送账号
+                        <span id="account-selected-count" class="target-count">已选 0 个</span>
+                    </label>
+                    <div class="account-check-list" id="account-check-list">
+                        <div class="account-check-empty">加载账号中...</div>
+                    </div>
+                    <small class="text-muted" id="account-rotate-hint">
+                        只勾一个就是单号发送。勾多个时每个群本轮只发一次，由这些号轮流发，不要再为每个号各建一条相同任务。
+                    </small>
                 </div>
 
                 <div class="form-group">
@@ -1182,7 +1240,7 @@
                     </details>
 
                     <small class="text-muted" id="target-hint">
-                        选中的所有目标合并为一条定时任务，触发时按下方间隔依次发送
+                        选中的所有目标合并为一条定时任务。勾了多个号时，每个群本轮只由其中一个号发送。
                     </small>
                 </div>
 
@@ -1190,8 +1248,21 @@
                     <label class="form-label">目标之间的间隔（秒）</label>
                     <input type="number" class="form-input" id="send-interval" value="5" min="0" step="0.5">
                     <small class="text-muted">
-                        群发时每发完一个目标等待的秒数。目标较多时不要设得太小，否则容易触发 Telegram 限流
+                        群发时每发完一个目标等待的秒数。目标较多时不要设得太小，否则容易触发 Telegram 限流。多号轮询时，每个号实际发送间隔会再乘上账号数。
                     </small>
+                </div>
+
+                <div class="stagger-row">
+                    <div class="form-group">
+                        <label class="form-label">换号额外间隔（秒）</label>
+                        <input type="number" class="form-input" id="account-stagger" value="0" min="0" step="1">
+                        <small class="text-muted">轮询切到下一个号时再多等的秒数，0 表示只按上面的目标间隔</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">与其他任务错开（秒）</label>
+                        <input type="number" class="form-input" id="job-stagger" value="30" min="0" step="1">
+                        <small class="text-muted">多条任务同一时间触发时排队错开。5–10 个号请不要再设成同一秒一起发，0 表示不排队</small>
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -1792,6 +1863,9 @@
         if (/allow_payment_required/i.test(raw)) {
             return '该群开启了付费发言，未付费无法发送';
         }
+        if (/invalid peer/i.test(raw) || /peer_id_invalid/i.test(raw)) {
+            return '当前账号无法向该目标发送（号被冻结、不在群内或会话失效）';
+        }
         return raw;
     }
 
@@ -1890,6 +1964,11 @@
         </div>`;
     }
 
+    function jobAccountIds(msg) {
+        if (Array.isArray(msg.account_ids) && msg.account_ids.length) return msg.account_ids;
+        return msg.account_id ? [msg.account_id] : [];
+    }
+
     function accountLabel(accountId) {
         if (!accountId) return '未设置';
 
@@ -1901,12 +1980,20 @@
     }
 
     function formatAccount(msg) {
-        if (!msg.account_id) {
+        const ids = jobAccountIds(msg);
+        if (!ids.length) {
             return '<div class="message-account"><i class="bi bi-person-x"></i><span>未指定账号</span></div>';
         }
 
-        return `<div class="message-account" title="${escapeHtml(msg.account_id)}">
-            <i class="bi bi-person-circle"></i><span>${escapeHtml(accountLabel(msg.account_id))}</span>
+        if (ids.length === 1) {
+            return `<div class="message-account" title="${escapeHtml(ids[0])}">
+                <i class="bi bi-person-circle"></i><span>${escapeHtml(accountLabel(ids[0]))}</span>
+            </div>`;
+        }
+
+        const title = ids.map(accountLabel).join('、');
+        return `<div class="message-account" title="${escapeHtml(title)}">
+            <i class="bi bi-arrow-repeat"></i><span>${ids.length} 个号轮询 · ${escapeHtml(accountLabel(ids[0]))}</span>
         </div>`;
     }
 
@@ -1935,14 +2022,52 @@
         return div.innerHTML;
     }
 
-    function onAccountChange() {
-        // 群组归属于账号，换账号后原先的勾选不再有意义
-        resetTargetSelection();
-        loadTargetOptions(true);
+    function selectedJobAccounts() {
+        return Array.from(document.querySelectorAll('.job-account-check:checked')).map(el => el.value);
+    }
+
+    function primaryJobAccount() {
+        return selectedJobAccounts()[0] || '';
+    }
+
+    function updateAccountSelection() {
+        const ids = selectedJobAccounts();
+        const count = document.getElementById('account-selected-count');
+        if (count) count.textContent = `已选 ${ids.length} 个`;
+        const hint = document.getElementById('account-rotate-hint');
+        if (hint) {
+            hint.textContent = ids.length > 1
+                ? `已选 ${ids.length} 个号：每个群本轮只发一次，按勾选顺序轮流发送。请确保这些号都已经在目标群里。`
+                : '只勾一个就是单号发送。勾多个时每个群本轮只发一次，由这些号轮流发，不要再为每个号各建一条相同任务。';
+        }
+    }
+
+    function onJobAccountsChange() {
+        const first = primaryJobAccount();
+        if (!first) {
+            targetOptions = [];
+            loadedTargetsFor = null;
+            document.getElementById('target-list').innerHTML = '<div class="target-empty">请先选择账号</div>';
+            updateAccountSelection();
+            return;
+        }
+        if (first !== loadedTargetsFor) {
+            if (loadedTargetsFor) resetTargetSelection();
+            loadTargetOptions(true);
+        }
+        updateAccountSelection();
+    }
+
+    function setJobAccounts(accountIds) {
+        const wanted = new Set((accountIds || []).map(String));
+        document.querySelectorAll('.job-account-check').forEach(el => {
+            el.checked = wanted.has(el.value);
+        });
+        updateAccountSelection();
     }
 
     async function loadTargetOptions(force) {
-        const accountId = document.getElementById('account-selector').value;
+        const accountId = primaryJobAccount();
         const list = document.getElementById('target-list');
 
         if (!accountId) {
@@ -2084,7 +2209,7 @@
     };
 
     async function precheckSelectedTargets() {
-        const accountId = document.getElementById('account-selector').value;
+        const accountId = primaryJobAccount();
         const targetIds = collectTargetIds();
         const container = document.getElementById('precheckResult');
 
@@ -2180,24 +2305,31 @@
         try {
             const response = await fetch('/api/accounts');
             const data = await response.json();
-            const select = document.getElementById('account-selector');
-            
-            select.innerHTML = '<option value="">请选择账号</option>';
+            const list = document.getElementById('account-check-list');
             accountMap = {};
-            
-            if (data.accounts && data.accounts.length > 0) {
-                data.accounts.forEach(account => {
-                    accountMap[account.account_id] = account;
-                    
-                    const option = document.createElement('option');
-                    option.value = account.account_id;
-                    option.textContent = account.name
+
+            const accounts = data.accounts || [];
+            accounts.forEach(account => {
+                accountMap[account.account_id] = account;
+            });
+
+            if (!accounts.length) {
+                list.innerHTML = '<div class="account-check-empty">暂无账号，请先在账号管理中添加</div>';
+            } else {
+                list.innerHTML = accounts.map(account => {
+                    const label = account.name
                         ? `${account.name} · ${account.phone}`
                         : `${account.phone} (${account.account_id})`;
-                    select.appendChild(option);
-                });
+                    const limited = account.is_limited ? ' · 已受限' : '';
+                    return `<label class="account-check-item">
+                        <input type="checkbox" class="job-account-check" value="${escapeHtml(account.account_id)}"
+                               onchange="onJobAccountsChange()">
+                        <span>${escapeHtml(label)}${limited}</span>
+                    </label>`;
+                }).join('');
             }
-            
+
+            updateAccountSelection();
             if (messages.length) {
                 renderMessages();
             }
@@ -2344,9 +2476,12 @@
         document.getElementById('messageForm').reset();
         resetTargetSelection();
         document.getElementById('send-interval').value = 5;
+        document.getElementById('account-stagger').value = 0;
+        document.getElementById('job-stagger').value = 30;
         document.getElementById('precheck-enabled').checked = true;
         document.getElementById('template-picker').value = '';
         fillTemplatePicker();
+        setJobAccounts([]);
         document.getElementById('messageModal').classList.add('show');
         loadTargetOptions();
     }
@@ -2360,7 +2495,7 @@
         
         editingId = id;
         document.getElementById('modalTitle').textContent = '编辑定时消息';
-        document.getElementById('account-selector').value = msg.account_id || '';
+        setJobAccounts(jobAccountIds(msg));
         document.getElementById('job-name').value = msg.name || '';
         
         if (msg.use_ai) {
@@ -2376,6 +2511,8 @@
         getMessageTargets(msg).forEach(target => selectedTargets.add(String(target)));
         updateTargetCount();
         document.getElementById('send-interval').value = msg.send_interval ?? 5;
+        document.getElementById('account-stagger').value = msg.account_stagger ?? 0;
+        document.getElementById('job-stagger').value = msg.job_stagger ?? 30;
         document.getElementById('precheck-enabled').checked = msg.precheck !== false;
         loadTargetOptions();
         
@@ -2649,6 +2786,12 @@
             intervalString = `${hours} ${minutes}`;
         }
         
+        const accountIds = selectedJobAccounts();
+        if (!accountIds.length) {
+            showNotification('请至少选择一个发送账号', 'error');
+            return;
+        }
+
         const targetIds = collectTargetIds();
         if (!targetIds.length) {
             showNotification('请至少选择一个目标群组', 'error');
@@ -2656,7 +2799,8 @@
         }
         
         const formData = {
-            account_id: document.getElementById('account-selector').value,
+            account_id: accountIds[0],
+            account_ids: accountIds,
             name: document.getElementById('job-name').value.trim(),
             message: messageType === 'text' ? document.getElementById('message-content').value : '',
             channel_ids: targetIds,
@@ -2668,6 +2812,8 @@
             delete_after_send: document.getElementById('delete-after-send').checked,
             max_executions: maxExecutions,
             send_interval: parseFloat(document.getElementById('send-interval').value) || 0,
+            account_stagger: parseFloat(document.getElementById('account-stagger').value) || 0,
+            job_stagger: parseFloat(document.getElementById('job-stagger').value),
             precheck: document.getElementById('precheck-enabled').checked,
             template_id: document.getElementById('template-picker').value || ''
         };
@@ -2931,7 +3077,8 @@
                     <p><strong>消息ID:</strong> ${msg.job_id || msg.id}</p>
                     <p><strong>状态:</strong> ${msg.active !== false ? '运行中' : '已暂停'}</p>
                     <p><strong>下次发送:</strong> ${msg.active === false ? '已暂停' : (msg.next_run_at ? escapeHtml(String(msg.next_run_at).replace('T', ' ')) : '未挂上调度器')}</p>
-                    <p><strong>账号:</strong> ${accountLabel(msg.account_id)}</p>
+                    <p><strong>账号:</strong> ${jobAccountIds(msg).map(id => escapeHtml(accountLabel(id))).join('、') || '未指定'}
+                        ${jobAccountIds(msg).length > 1 ? '（轮询，每个群本轮只发一次）' : ''}</p>
                     <p><strong>目标频道/群组:</strong> ${formatTargets(msg)}</p>
                     ${(msg.excluded_targets || []).length ? `
                         <details style="margin: -8px 0 12px 0;">
@@ -2952,6 +3099,8 @@
                         </details>
                         <p><strong>目标间隔:</strong> ${msg.send_interval ?? 5} 秒</p>
                     ` : ''}
+                    <p><strong>换号额外间隔:</strong> ${msg.account_stagger ?? 0} 秒</p>
+                    <p><strong>与其他任务错开:</strong> ${msg.job_stagger ?? 30} 秒</p>
                     <p><strong>调度表达式:</strong> ${msg.schedule || '未设置'}</p>
                     <p><strong>消息类型:</strong> ${msg.use_ai ? 'AI生成' : '固定文本'}</p>
                     ${msg.use_ai ? `<p><strong>AI提示词:</strong> ${msg.ai_prompt || '无'}</p>` : `<p><strong>消息内容:</strong> ${msg.message || '无'}</p>`}

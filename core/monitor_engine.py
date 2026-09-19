@@ -29,6 +29,8 @@ class MonitorEngine(metaclass=Singleton):
         self._running_scheduled_jobs: Set[str] = set()
         self._send_progress: Dict[str, Dict] = {}
         self._progress_listeners: List = []
+        self._job_start_lock = None
+        self._next_job_slot = 0.0
         self.logger = get_logger(__name__)
         self.monitors_file = Path("data/monitor_configs.json")
         self.scheduled_messages_file = Path("data/scheduled_messages.json")
@@ -148,6 +150,75 @@ class MonitorEngine(metaclass=Singleton):
         if not text:
             return '定时消息'
         return text if len(text) <= 24 else text[:24] + '…'
+
+    DEFAULT_JOB_STAGGER = 30.0
+
+    @staticmethod
+    def get_job_account_ids(message_config: Optional[dict]) -> List[str]:
+        """取出任务绑定的账号池，兼容只有单个 account_id 的旧配置"""
+        config = message_config or {}
+        raw_ids = config.get('account_ids')
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raw_ids = [config.get('account_id')]
+
+        account_ids = []
+        for raw in raw_ids:
+            account_id = str(raw or '').strip()
+            if account_id and account_id not in account_ids:
+                account_ids.append(account_id)
+        return account_ids
+
+    @staticmethod
+    def _config_seconds(message_config: Optional[dict], key: str, default: float = 0.0) -> float:
+        raw = (message_config or {}).get(key, default)
+        if raw in (None, ''):
+            return default
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return default
+
+    async def _wait_global_job_slot(self, job_id: str, message_config: dict):
+        """多条任务同一时刻触发时排队错开，避免 5–10 个号同时开打"""
+        if 'job_stagger' in message_config and message_config.get('job_stagger') not in (None, ''):
+            seconds = self._config_seconds(message_config, 'job_stagger', self.DEFAULT_JOB_STAGGER)
+        else:
+            seconds = self.DEFAULT_JOB_STAGGER
+        if seconds <= 0:
+            return
+
+        if self._job_start_lock is None:
+            self._job_start_lock = asyncio.Lock()
+
+        async with self._job_start_lock:
+            now = asyncio.get_running_loop().time()
+            wait = self._next_job_slot - now
+            if wait > 0:
+                self.logger.info(f"任务 {job_id} 与其他任务错开，等待 {wait:.0f} 秒后再发")
+                self._publish_progress(
+                    job_id, status='running', current_target=f'与其他任务错开，等待 {int(wait)} 秒'
+                )
+                await asyncio.sleep(wait)
+            self._next_job_slot = asyncio.get_running_loop().time() + seconds
+
+    def _resolve_send_accounts(self, account_manager, health_store, account_ids: List[str]):
+        """过滤出已连接且未受限的发送账号，受限/未连接的记进 skipped"""
+        accounts = []
+        skipped = []
+        seen = set()
+        for account_id in account_ids:
+            if account_id in seen:
+                continue
+            seen.add(account_id)
+            if health_store.is_limited(account_id):
+                skipped.append((account_id, health_store.describe(account_id) or '账号已受限'))
+                continue
+            account = account_manager.get_account(account_id)
+            if not account or not getattr(account, 'client', None):
+                skipped.append((account_id, '未找到或未连接'))
+                continue
+            accounts.append(account)
+        return accounts, skipped
 
     def unschedule_job(self, job_id: str) -> bool:
         if not self.scheduler or not self.scheduler.running:
@@ -1007,6 +1078,10 @@ class MonitorEngine(metaclass=Singleton):
                 'cron': config.cron,
                 'schedule': config.cron,
                 'account_id': config.account_id,
+                'account_ids': list(getattr(config, 'account_ids', None) or ([config.account_id] if config.account_id else [])),
+                'account_stagger': getattr(config, 'account_stagger', 0),
+                'job_stagger': getattr(config, 'job_stagger', 30),
+                'account_cursor': 0,
                 'random_offset': getattr(config, 'random_offset', 0),
                 'random_delay': getattr(config, 'random_offset', 0),
                 'delete_after_sending': getattr(config, 'delete_after_sending', False),
@@ -1254,7 +1329,22 @@ class MonitorEngine(metaclass=Singleton):
             return True
 
         text = str(error).upper()
-        return 'PEER_FLOOD' in text or 'USER_RESTRICTED' in text or 'INPUT_USER_DEACTIVATED' in text
+        return (
+            'PEER_FLOOD' in text
+            or 'USER_RESTRICTED' in text
+            or 'INPUT_USER_DEACTIVATED' in text
+            or 'FROZEN' in text
+        )
+
+    @staticmethod
+    def _humanize_send_error(error: Exception) -> str:
+        reason = str(error) or error.__class__.__name__
+        text = reason.lower()
+        if 'invalid peer' in text or 'peer_id_invalid' in text:
+            return '当前账号无法向该目标发送（号被冻结、不在群内或会话失效）'
+        if 'frozen' in text:
+            return '账号已被冻结，无法发送'
+        return reason
 
     @staticmethod
     def _is_unsendable_error(error: Exception) -> Optional[str]:
@@ -1354,29 +1444,51 @@ class MonitorEngine(metaclass=Singleton):
         summary['removed_targets'] = removed
         return removed
 
-    async def _broadcast_to_targets(self, job_id: str, message_config: dict, account,
+    async def _broadcast_to_targets(self, job_id: str, message_config: dict, accounts,
                                     targets: List[int], message_text: str) -> dict:
         """依次把消息发往所有目标，返回本轮汇总
 
         目标可能成百上千，因此逐个发送、逐个记录失败原因，单个目标出错不影响其余目标。
+        绑了多个号时按群轮询：每个群本轮只发一次，由账号池轮流发送。
         """
         from core.account_health_store import AccountHealthStore
         from services.precheck_service import PrecheckService
 
-        interval = message_config.get('send_interval', 5)
-        try:
-            interval = max(0.0, float(interval))
-        except (TypeError, ValueError):
-            interval = 5.0
+        if not isinstance(accounts, list):
+            accounts = [accounts] if accounts else []
 
+        interval = self._config_seconds(message_config, 'send_interval', 5.0)
+        account_stagger = self._config_seconds(message_config, 'account_stagger', 0.0)
         precheck_enabled = message_config.get('precheck', True)
         precheck = PrecheckService() if precheck_enabled else None
+        health_store = AccountHealthStore()
 
         summary = {'total': len(targets), 'success': 0, 'failed': 0, 'skipped': 0,
                    'failures': [], 'skips': []}
         sent_any = False
+        last_account_id = None
+        rotate_i = int(message_config.get('account_cursor') or 0)
+        pool = list(accounts)
+
+        def account_label(account) -> str:
+            return getattr(account, 'phone', None) or getattr(account, 'account_id', '') or ''
+
+        def current_account():
+            if not pool:
+                return None
+            return pool[rotate_i % len(pool)]
+
+        def drop_account(account, reason: str, mark_limited: bool = True):
+            nonlocal pool
+            account_id = getattr(account, 'account_id', None)
+            if account_id and mark_limited:
+                health_store.mark_limited(account_id, reason, source='error')
+            pool[:] = [item for item in pool if getattr(item, 'account_id', None) != account_id]
+            self.logger.error(f"⛔ 账号 {account_id} 本轮停用: {reason}")
 
         def publish():
+            account = current_account()
+            prefix = f"{account_label(account)} · " if account and len(accounts) > 1 else ''
             self._publish_progress(
                 job_id,
                 status='running',
@@ -1385,7 +1497,7 @@ class MonitorEngine(metaclass=Singleton):
                 success=summary['success'],
                 failed=summary['failed'],
                 skipped=summary['skipped'],
-                current_target=self._target_title(message_config, target_id) or str(target_id) if targets else '',
+                current_target=(prefix + (self._target_title(message_config, target_id) or str(target_id))) if targets else '',
                 stopped=bool(summary.get('stopped')),
             )
 
@@ -1401,6 +1513,13 @@ class MonitorEngine(metaclass=Singleton):
                 summary['stopped'] = True
                 break
 
+            if not pool:
+                self.logger.error(f"⛔ 账号池已空，中止本轮剩余 {len(targets) - index} 个目标: {job_id}")
+                summary['stopped'] = True
+                summary['account_limited'] = True
+                break
+
+            account = current_account()
             title = self._target_title(message_config, target_id)
             publish()
 
@@ -1413,31 +1532,44 @@ class MonitorEngine(metaclass=Singleton):
                     self.logger.info(f"⏭️ 跳过目标 {title or target_id}: {check['reason']}")
                     self._collect_skip(summary, target_id, check['reason'], title)
                     self._touch_target_stat(message_config, target_id, 'skipped', check['reason'], title)
+                    rotate_i += 1
                     publish()
                     continue
 
             if sent_any and interval > 0:
                 await asyncio.sleep(interval)
+            if last_account_id and account.account_id != last_account_id and account_stagger > 0:
+                await asyncio.sleep(account_stagger)
 
             try:
                 # send_message 内部会解析实体，无需额外 get_entity，省掉一半 API 调用
                 await account.client.send_message(target_id, message_text)
                 summary['success'] += 1
                 sent_any = True
+                last_account_id = account.account_id
                 self._touch_target_stat(message_config, target_id, 'success', '', title)
+                rotate_i += 1
                 publish()
 
             except Exception as send_error:
                 wait_seconds = getattr(send_error, 'seconds', None)
                 if isinstance(wait_seconds, int) and wait_seconds > 0:
-                    # FloodWait：等满再重试一次，超过 5 分钟就放弃本轮，留到下次触发
+                    # FloodWait：等满再重试一次，超过 5 分钟就放弃该号
                     if wait_seconds > 300:
-                        self.logger.error(f"⛔ 触发限流需等待 {wait_seconds} 秒，中止本轮群发: {job_id}")
-                        self._collect_failure(summary, target_id, f"触发限流，需等待 {wait_seconds} 秒，已中止本轮", title)
-                        self._touch_target_stat(message_config, target_id, 'failed', f"触发限流，需等待 {wait_seconds} 秒，已中止本轮", title)
-                        summary['stopped'] = True
+                        self.logger.error(
+                            f"⛔ 账号 {account.account_id} 触发限流需等待 {wait_seconds} 秒，本轮停用该号"
+                        )
+                        self._collect_failure(summary, target_id, f"触发限流，需等待 {wait_seconds} 秒", title)
+                        self._touch_target_stat(message_config, target_id, 'failed', f"触发限流，需等待 {wait_seconds} 秒", title)
+                        drop_account(account, f"群发时触发限流，需等待 {wait_seconds} 秒", mark_limited=False)
+                        rotate_i += 1
+                        if not pool:
+                            summary['stopped'] = True
+                            summary['account_limited'] = True
+                            publish()
+                            break
                         publish()
-                        break
+                        continue
 
                     self.logger.warning(f"⏳ 触发限流，等待 {wait_seconds} 秒后重试目标 {target_id}")
                     await asyncio.sleep(wait_seconds + 1)
@@ -1445,41 +1577,48 @@ class MonitorEngine(metaclass=Singleton):
                         await account.client.send_message(target_id, message_text)
                         summary['success'] += 1
                         sent_any = True
+                        last_account_id = account.account_id
                         self._touch_target_stat(message_config, target_id, 'success', '', title)
+                        rotate_i += 1
                         publish()
                         continue
                     except Exception as retry_error:
                         send_error = retry_error
 
-                reason = str(send_error) or send_error.__class__.__name__
+                reason = self._humanize_send_error(send_error)
 
                 skip_reason = self._is_unsendable_error(send_error)
                 if skip_reason:
                     self.logger.info(f"⏭️ 跳过目标 {title or target_id}: {skip_reason}")
                     self._collect_skip(summary, target_id, skip_reason, title)
                     self._touch_target_stat(message_config, target_id, 'skipped', skip_reason, title)
+                    rotate_i += 1
                     publish()
                     continue
 
                 if self._is_spamblock_error(send_error):
-                    # 账号级风控，继续发只会加重处罚，立刻标记并中止本轮
-                    account_id = message_config.get('account_id')
-                    if account_id:
-                        AccountHealthStore().mark_limited(
-                            account_id, f"群发时触发风控: {reason}", source='error'
-                        )
-                    self.logger.error(f"⛔ 账号 {account_id} 触发风控，中止本轮群发: {reason}")
+                    # 账号级风控：停用该号。还有其他号则继续轮询，不再整轮中止
+                    drop_account(account, f"群发时触发风控: {reason}")
                     self._collect_failure(summary, target_id, f"账号触发风控: {reason}", title)
                     self._touch_target_stat(message_config, target_id, 'failed', f"账号触发风控: {reason}", title)
-                    summary['stopped'] = True
-                    summary['account_limited'] = True
+                    rotate_i += 1
+                    if not pool:
+                        summary['stopped'] = True
+                        summary['account_limited'] = True
+                        publish()
+                        break
                     publish()
-                    break
+                    continue
 
                 self.logger.error(f"❌ 发送失败 {title or target_id}: {reason}")
                 self._collect_failure(summary, target_id, reason, title)
                 self._touch_target_stat(message_config, target_id, 'failed', reason, title)
+                last_account_id = account.account_id
+                rotate_i += 1
                 publish()
+
+        if accounts:
+            message_config['account_cursor'] = rotate_i % max(len(self.get_job_account_ids(message_config)), 1)
 
         return summary
 
@@ -1568,12 +1707,12 @@ class MonitorEngine(metaclass=Singleton):
                     pass
                 return
 
-            account_id = message_config.get('account_id')
+            account_ids = self.get_job_account_ids(message_config)
             targets = self.get_message_targets(message_config)
             message_text = message_config.get('message', '')
 
-            if not account_id or not targets:
-                self.logger.error(f"定时消息配置不完整: account_id={account_id}, targets={targets}")
+            if not account_ids or not targets:
+                self.logger.error(f"定时消息配置不完整: account_ids={account_ids}, targets={targets}")
                 self._record_send_result(
                     message_config, job_id, 'failed', message=message_text,
                     error="配置不完整，缺少账号或目标", stage='config'
@@ -1583,24 +1722,18 @@ class MonitorEngine(metaclass=Singleton):
 
             from core.account_manager import AccountManager
             account_manager = AccountManager()
-            account = account_manager.get_account(account_id)
-
-            if not account or not account.client:
-                self.logger.error(f"账号未找到或未连接: {account_id}")
-                self._record_send_result(
-                    message_config, job_id, 'failed', message=message_text,
-                    error=f"账号 {account_id} 未找到或未连接", stage='account'
-                )
-                self._save_scheduled_messages()
-                return
-
             from core.account_health_store import AccountHealthStore
             health_store = AccountHealthStore()
 
-            if health_store.is_limited(account_id):
-                # 受限的号继续群发只会加重处罚，而且一条也发不出去
-                reason = health_store.describe(account_id)
-                self.logger.warning(f"⛔ 账号处于受限状态，跳过本轮群发: {account_id}（{reason}）")
+            accounts, skipped_accounts = self._resolve_send_accounts(
+                account_manager, health_store, account_ids
+            )
+            for skipped_id, skipped_reason in skipped_accounts:
+                self.logger.warning(f"任务 {job_id} 跳过账号 {skipped_id}: {skipped_reason}")
+
+            if not accounts:
+                reason = '；'.join(f"{aid}: {why}" for aid, why in skipped_accounts) or '没有可用的发送账号'
+                self.logger.warning(f"⛔ 没有可用发送账号，跳过本轮群发: {job_id}（{reason}）")
                 self._record_send_result(
                     message_config, job_id, 'skipped', message=message_text,
                     error=reason, stage='account'
@@ -1677,11 +1810,6 @@ class MonitorEngine(metaclass=Singleton):
                 return
 
             random_delay = 0 if run_now else message_config.get('random_delay', message_config.get('random_offset', 0))
-            if random_delay > 0:
-                import random  # NOSONAR - 用于模拟人类发送延迟，不需要密码学安全性
-                actual_delay = random.randint(0, random_delay)  # NOSONAR
-                self.logger.info(f"⏰ 定时消息延时发送: {actual_delay} 秒 (最大延时: {random_delay} 秒)")
-                await asyncio.sleep(actual_delay)
 
             self._running_scheduled_jobs.add(job_id)
             self._publish_progress(
@@ -1689,8 +1817,17 @@ class MonitorEngine(metaclass=Singleton):
                 success=0, failed=0, skipped=0, current_target=''
             )
             try:
+                if not run_now:
+                    await self._wait_global_job_slot(job_id, message_config)
+
+                if random_delay > 0:
+                    import random  # NOSONAR - 用于模拟人类发送延迟，不需要密码学安全性
+                    actual_delay = random.randint(0, random_delay)  # NOSONAR
+                    self.logger.info(f"⏰ 定时消息延时发送: {actual_delay} 秒 (最大延时: {random_delay} 秒)")
+                    await asyncio.sleep(actual_delay)
+
                 summary = await self._broadcast_to_targets(
-                    job_id, message_config, account, targets, message_text
+                    job_id, message_config, accounts, targets, message_text
                 )
             finally:
                 self._running_scheduled_jobs.discard(job_id)
@@ -1795,13 +1932,27 @@ class MonitorEngine(metaclass=Singleton):
                 self.logger.error(f"记录发送结果失败: {record_error}")
 
     def pause_account_scheduled_messages(self, account_id: str) -> int:
-        """账号删除后停掉它名下的定时消息，避免下一轮还去找这个号"""
+        """账号删除后从任务账号池里拿掉；池空了才暂停任务"""
         paused = 0
+        changed = False
         for message in self.scheduled_messages:
-            if message.get('account_id') != account_id or not message.get('active', True):
+            account_ids = self.get_job_account_ids(message)
+            if account_id not in account_ids:
+                continue
+
+            remaining = [item for item in account_ids if item != account_id]
+            if remaining:
+                message['account_ids'] = remaining
+                message['account_id'] = remaining[0]
+                changed = True
+                self.logger.info(f"账号 {account_id} 已删除，任务 {message.get('job_id')} 改用剩余 {len(remaining)} 个号")
+                continue
+
+            if not message.get('active', True):
                 continue
 
             message['active'] = False
+            changed = True
             job_id = message.get('job_id')
             if self.scheduler and self.scheduler.running and job_id:
                 try:
@@ -1814,8 +1965,9 @@ class MonitorEngine(metaclass=Singleton):
 
             paused += 1
 
-        if paused:
+        if changed:
             self._save_scheduled_messages()
+        if paused:
             self.logger.info(f"账号 {account_id} 已删除，暂停了 {paused} 条定时消息")
 
         return paused
@@ -1883,6 +2035,13 @@ class MonitorEngine(metaclass=Singleton):
                         message.get('ai_prompt') or ''
                     )
                 message.setdefault('target_titles', {})
+                account_ids = self.get_job_account_ids(message)
+                if account_ids:
+                    message['account_ids'] = account_ids
+                    message['account_id'] = account_ids[0]
+                message.setdefault('account_stagger', 0)
+                message.setdefault('job_stagger', self.DEFAULT_JOB_STAGGER)
+                message.setdefault('account_cursor', 0)
             self.logger.info(f"已加载 {len(self.scheduled_messages)} 条定时消息")
 
         except Exception as e:
