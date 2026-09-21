@@ -348,6 +348,49 @@
         flex-shrink: 0;
     }
 
+    .image-picker {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .image-preview {
+        display: flex;
+        align-items: flex-end;
+        gap: 10px;
+    }
+
+    .image-preview img,
+    .message-thumb,
+    .template-thumb {
+        display: block;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-secondary);
+    }
+
+    .image-preview img {
+        width: 120px;
+        height: 120px;
+    }
+
+    .message-thumb {
+        width: 72px;
+        height: 72px;
+        margin-bottom: 8px;
+    }
+
+    .template-item {
+        align-items: center;
+    }
+
+    .template-thumb {
+        width: 48px;
+        height: 48px;
+        flex-shrink: 0;
+    }
+
     .last-run.success { color: var(--success-color); }
     .last-run.partial { color: var(--warning-color, #f59e0b); }
     .last-run.failed { color: var(--danger-color); }
@@ -1067,7 +1110,22 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label">模板内容</label>
-                    <textarea class="form-textarea" id="template-content" rows="5" placeholder="要发送的完整文案"></textarea>
+                    <textarea class="form-textarea" id="template-content" rows="5" placeholder="要发送的完整文案，可留空只发图片"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">配图（可选）</label>
+                    <input type="file" id="template-image-input" accept="image/jpeg,image/png,image/webp,image/gif"
+                           hidden onchange="onImageFile('template', this)">
+                    <div class="image-picker">
+                        <div class="image-preview" id="template-image-preview" style="display: none;">
+                            <img id="template-image-preview-img" alt="模板配图">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="clearImage('template')">移除</button>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-secondary" id="template-image-empty"
+                                onclick="document.getElementById('template-image-input').click()">
+                            <i class="bi bi-image"></i> 选择图片
+                        </button>
+                    </div>
                 </div>
                 <div class="template-editor-actions">
                     <button type="button" class="btn btn-primary btn-sm" onclick="submitTemplate()">保存模板</button>
@@ -1197,6 +1255,23 @@
                         </button>
                     </div>
                     <textarea class="form-textarea" id="message-content" placeholder="输入要发送的消息内容，或从上方选择模板"></textarea>
+                </div>
+
+                <div class="form-group" id="job-image-group">
+                    <label class="form-label">配图（可选）</label>
+                    <input type="file" id="job-image-input" accept="image/jpeg,image/png,image/webp,image/gif"
+                           hidden onchange="onImageFile('job', this)">
+                    <div class="image-picker">
+                        <div class="image-preview" id="job-image-preview" style="display: none;">
+                            <img id="job-image-preview-img" alt="配图预览">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="clearImage('job')">移除</button>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-secondary" id="job-image-empty"
+                                onclick="document.getElementById('job-image-input').click()">
+                            <i class="bi bi-image"></i> 选择图片
+                        </button>
+                    </div>
+                    <small class="text-muted">支持 jpg / png / webp / gif，不超过 10MB。有图时文案会作为图片说明一起发出</small>
                 </div>
                 
                 <div class="form-group">
@@ -1357,6 +1432,8 @@
     let accountMap = {};
     let messageTemplates = [];
     let editingTemplateId = null;
+    let jobImage = '';
+    let templateImage = '';
     
     document.addEventListener('DOMContentLoaded', function() {
         loadMessages();
@@ -2016,6 +2093,60 @@
         </span>`;
     }
 
+    function mediaUrl(filename) {
+        return `/media/messages/${encodeURIComponent(filename)}`;
+    }
+
+    function renderImagePicker(kind) {
+        const filename = kind === 'job' ? jobImage : templateImage;
+        const preview = document.getElementById(`${kind}-image-preview`);
+        const img = document.getElementById(`${kind}-image-preview-img`);
+        const empty = document.getElementById(`${kind}-image-empty`);
+        if (!preview || !img || !empty) return;
+
+        if (filename) {
+            img.src = mediaUrl(filename);
+            preview.style.display = 'flex';
+            empty.style.display = 'none';
+        } else {
+            img.removeAttribute('src');
+            preview.style.display = 'none';
+            empty.style.display = 'flex';
+        }
+    }
+
+    function setImage(kind, filename) {
+        if (kind === 'job') jobImage = filename || '';
+        else templateImage = filename || '';
+        renderImagePicker(kind);
+    }
+
+    function clearImage(kind) {
+        setImage(kind, '');
+    }
+
+    async function onImageFile(kind, input) {
+        const file = input.files && input.files[0];
+        input.value = '';
+        if (!file) return;
+
+        const form = new FormData();
+        form.append('file', file);
+        try {
+            const response = await fetch('/api/message-media', { method: 'POST', body: form });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+                showNotification(data.detail || data.message || '图片上传失败', 'error');
+                return;
+            }
+            setImage(kind, data.filename);
+            showNotification('图片已上传', 'success');
+        } catch (error) {
+            console.error('上传图片失败:', error);
+            showNotification('图片上传失败', 'error');
+        }
+    }
+
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text == null ? '' : String(text);
@@ -2431,7 +2562,8 @@
                 
                 <div class="message-card-body">
                     <div class="message-content">
-                        ${msg.use_ai ? '<i class="bi bi-robot"></i> AI生成内容' : escapeHtml(msg.message || '')}
+                        ${msg.image ? `<img class="message-thumb" src="${mediaUrl(msg.image)}" alt="">` : ''}
+                        ${msg.use_ai ? '<i class="bi bi-robot"></i> AI生成内容' : escapeHtml(msg.message || (msg.image ? '图片消息' : ''))}
                         ${msg.delete_after_send ? '<span style="margin-left: 10px; color: var(--warning-color);"><i class="bi bi-trash"></i> 发送后删除</span>' : ''}
                     </div>
                     ${formatProgress(msg)}
@@ -2482,6 +2614,7 @@
         document.getElementById('template-picker').value = '';
         fillTemplatePicker();
         setJobAccounts([]);
+        setImage('job', '');
         document.getElementById('messageModal').classList.add('show');
         loadTargetOptions();
     }
@@ -2503,9 +2636,10 @@
             document.getElementById('ai-prompt').value = msg.ai_prompt || '';
         } else {
             document.querySelector('input[name="message_type"][value="text"]').checked = true;
-            document.getElementById('message-content').value = msg.message;
+            document.getElementById('message-content').value = msg.message || '';
         }
         toggleMessageType();
+        setImage('job', msg.image || '');
         
         resetTargetSelection();
         getMessageTargets(msg).forEach(target => selectedTargets.add(String(target)));
@@ -2575,6 +2709,7 @@
         document.querySelector('input[name="message_type"][value="text"]').checked = true;
         toggleMessageType();
         document.getElementById('message-content').value = item.content || '';
+        setImage('job', item.image || '');
         const nameInput = document.getElementById('job-name');
         if (nameInput && !nameInput.value.trim() && item.title) {
             nameInput.value = item.title;
@@ -2583,8 +2718,8 @@
 
     async function saveCurrentAsTemplate() {
         const content = document.getElementById('message-content').value.trim();
-        if (!content) {
-            showNotification('请先填写消息内容', 'warning');
+        if (!content && !jobImage) {
+            showNotification('请先填写消息内容或上传图片', 'warning');
             return;
         }
 
@@ -2593,7 +2728,7 @@
             const response = await fetch('/api/message-templates', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title, content })
+                body: JSON.stringify({ title, content, image: jobImage })
             });
             const data = await response.json();
             if (!data.success) {
@@ -2626,6 +2761,7 @@
         document.getElementById('templateModalTitle').textContent = '消息模板';
         document.getElementById('template-title').value = '';
         document.getElementById('template-content').value = '';
+        setImage('template', '');
     }
 
     function editTemplate(templateId) {
@@ -2636,14 +2772,15 @@
         document.getElementById('templateModalTitle').textContent = '编辑模板';
         document.getElementById('template-title').value = item.title || '';
         document.getElementById('template-content').value = item.content || '';
+        setImage('template', item.image || '');
         document.getElementById('template-title').focus();
     }
 
     async function submitTemplate() {
         const title = document.getElementById('template-title').value.trim();
         const content = document.getElementById('template-content').value.trim();
-        if (!content) {
-            showNotification('模板内容不能为空', 'warning');
+        if (!content && !templateImage) {
+            showNotification('请填写文案或上传图片', 'warning');
             return;
         }
 
@@ -2655,7 +2792,7 @@
             const response = await fetch(url, {
                 method: editingTemplateId ? 'PUT' : 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title, content })
+                body: JSON.stringify({ title, content, image: templateImage })
             });
             const data = await response.json();
             if (!data.success) {
@@ -2723,10 +2860,11 @@
 
         list.innerHTML = items.map(item => `
             <div class="template-item">
-                <div>
+                ${item.image ? `<img class="template-thumb" src="${mediaUrl(item.image)}" alt="">` : ''}
+                <div style="min-width:0;flex:1;">
                     <div class="template-item-title">${escapeHtml(item.title)}</div>
-                    <div class="template-item-preview">${escapeHtml(item.preview || item.content || '')}</div>
-                    <div class="template-item-meta">用过 ${item.used_count || 0} 次</div>
+                    <div class="template-item-preview">${escapeHtml(item.preview || item.content || (item.image ? '图片' : ''))}</div>
+                    <div class="template-item-meta">用过 ${item.used_count || 0} 次${item.image ? ' · 含图' : ''}</div>
                 </div>
                 <div class="template-item-actions">
                     <button type="button" class="btn btn-sm btn-primary" onclick="useTemplateInForm('${item.template_id}')">使用</button>
@@ -2742,7 +2880,7 @@
         if (messageType === 'text') {
             document.getElementById('text-message-group').style.display = 'block';
             document.getElementById('ai-prompt-group').style.display = 'none';
-            document.getElementById('message-content').required = true;
+            document.getElementById('message-content').required = false;
             document.getElementById('ai-prompt').required = false;
         } else {
             document.getElementById('text-message-group').style.display = 'none';
@@ -2797,12 +2935,24 @@
             showNotification('请至少选择一个目标群组', 'error');
             return;
         }
+
+        if (messageType === 'text') {
+            const content = document.getElementById('message-content').value.trim();
+            if (!content && !jobImage) {
+                showNotification('请填写消息内容或上传图片', 'error');
+                return;
+            }
+        } else if (!document.getElementById('ai-prompt').value.trim() && !jobImage) {
+            showNotification('请填写 AI 提示词或上传图片', 'error');
+            return;
+        }
         
         const formData = {
             account_id: accountIds[0],
             account_ids: accountIds,
             name: document.getElementById('job-name').value.trim(),
             message: messageType === 'text' ? document.getElementById('message-content').value : '',
+            image: jobImage,
             channel_ids: targetIds,
             schedule_mode: scheduleMode,
             schedule: scheduleMode === 'cron' ? cronExpression : intervalString,
@@ -3104,6 +3254,7 @@
                     <p><strong>调度表达式:</strong> ${msg.schedule || '未设置'}</p>
                     <p><strong>消息类型:</strong> ${msg.use_ai ? 'AI生成' : '固定文本'}</p>
                     ${msg.use_ai ? `<p><strong>AI提示词:</strong> ${msg.ai_prompt || '无'}</p>` : `<p><strong>消息内容:</strong> ${msg.message || '无'}</p>`}
+                    ${msg.image ? `<p><strong>配图:</strong><br><img class="message-thumb" src="${mediaUrl(msg.image)}" alt=""></p>` : ''}
                     <p><strong>随机延时:</strong> ${msg.random_delay || 0} 秒</p>
                     <p><strong>发送后删除:</strong> ${msg.delete_after_send ? '是' : '否'}</p>
                     <p><strong>最大执行次数:</strong> ${msg.max_executions || '无限制'}</p>

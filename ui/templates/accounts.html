@@ -49,63 +49,155 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 16px;
+        gap: 12px 20px;
         flex-wrap: wrap;
-        padding: 14px 18px;
+        padding: 12px 14px;
         margin-bottom: 20px;
         background: var(--bg-card);
         border: 1px solid var(--border-color);
         border-radius: var(--radius-lg);
     }
 
-    .bulk-bar .bulk-links {
+    .bulk-cluster {
         display: flex;
         align-items: center;
-        gap: 14px;
-        font-size: 13px;
-        color: var(--text-secondary);
-    }
-
-    .bulk-bar button.btn-link {
-        background: none;
-        border: none;
-        color: var(--primary-color);
-        cursor: pointer;
-        font-size: 13px;
-        padding: 0;
-    }
-
-    .bulk-filter {
-        display: flex;
-        align-items: center;
+        flex-wrap: wrap;
         gap: 8px;
-        font-size: 13px;
-        color: var(--text-secondary);
+        min-width: 0;
     }
 
-    .bulk-filter .form-select {
-        width: auto;
-        min-width: 128px;
-        padding: 6px 10px;
+    .bulk-cluster-end {
+        margin-left: auto;
+    }
+
+    .bulk-mini {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 34px;
+        padding: 0 12px;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background: var(--bg-secondary);
+        color: var(--text-primary);
         font-size: 13px;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+
+    .bulk-mini:hover {
+        border-color: var(--primary-color);
+        color: var(--primary-color);
+    }
+
+    .bulk-count {
+        display: inline-flex;
+        align-items: center;
+        height: 34px;
+        padding: 0 12px;
+        border-radius: 999px;
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        font-size: 13px;
+        white-space: nowrap;
+    }
+
+    .bulk-count strong {
+        margin: 0 4px;
+        color: var(--text-primary);
+    }
+
+    .bulk-seg {
+        display: inline-flex;
+        align-items: center;
+        height: 34px;
+        padding: 3px;
+        border-radius: 9px;
+        background: var(--bg-tertiary);
+        gap: 2px;
+    }
+
+    .bulk-seg-btn {
+        height: 28px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+
+    .bulk-seg-btn.active {
+        background: var(--bg-card);
+        color: var(--text-primary);
+        font-weight: 600;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
     }
 
     .bulk-filter-count {
         color: var(--text-muted);
+        font-size: 12px;
         white-space: nowrap;
     }
 
-    .template-picker {
+    .bulk-template {
         display: flex;
         align-items: center;
         gap: 8px;
+        min-width: 0;
     }
 
-    .template-picker .form-select {
-        width: auto;
-        min-width: 160px;
-        padding: 6px 10px;
+    .bulk-select {
+        appearance: none;
+        -webkit-appearance: none;
+        height: 34px;
+        min-width: 180px;
+        max-width: 240px;
+        padding: 0 32px 0 12px;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background-color: var(--bg-secondary);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        color: var(--text-primary);
         font-size: 13px;
+        line-height: 34px;
+    }
+
+    .bulk-select:focus {
+        outline: none;
+        border-color: var(--primary-color);
+    }
+
+    .bulk-bar .btn-sm {
+        height: 34px;
+        min-height: 34px;
+        padding: 0 12px;
+        font-size: 13px;
+        white-space: nowrap;
+    }
+
+    .bulk-divider {
+        width: 1px;
+        height: 22px;
+        background: var(--border-color);
+        flex-shrink: 0;
+    }
+
+    @media (max-width: 900px) {
+        .bulk-cluster-end {
+            margin-left: 0;
+            width: 100%;
+        }
+
+        .bulk-template,
+        .bulk-select {
+            flex: 1;
+            max-width: none;
+        }
     }
 
     .template-editor {
@@ -709,41 +801,43 @@
 </div>
 
 <div class="bulk-bar" id="bulkBar" style="display: none;">
-    <div class="bulk-links">
-        <button type="button" class="btn-link" onclick="toggleAllAccounts(true)">全选</button>
-        <button type="button" class="btn-link" onclick="toggleAllAccounts(false)">全不选</button>
-        <span>已选中 <strong id="selectedAccountCount">0</strong> 个账号</span>
-        <div class="bulk-filter">
-            <label for="health-filter">受限状态</label>
-            <select id="health-filter" class="form-select" onchange="onHealthFilterChange()">
-                <option value="all">全部</option>
-                <option value="limited">已受限</option>
-                <option value="free">未受限</option>
-            </select>
-            <span id="health-filter-count" class="bulk-filter-count"></span>
+    <div class="bulk-cluster">
+        <button type="button" class="bulk-mini" onclick="toggleAllAccounts(true)">
+            <i class="bi bi-check2-all"></i>全选
+        </button>
+        <button type="button" class="bulk-mini" onclick="toggleAllAccounts(false)">
+            <i class="bi bi-dash-lg"></i>全不选
+        </button>
+        <span class="bulk-count">已选 <strong id="selectedAccountCount">0</strong></span>
+        <div class="bulk-seg" id="healthFilterSeg">
+            <button type="button" class="bulk-seg-btn active" data-health="all" onclick="onHealthFilterChange('all')">全部</button>
+            <button type="button" class="bulk-seg-btn" data-health="limited" onclick="onHealthFilterChange('limited')">已受限</button>
+            <button type="button" class="bulk-seg-btn" data-health="free" onclick="onHealthFilterChange('free')">未受限</button>
         </div>
+        <span id="health-filter-count" class="bulk-filter-count"></span>
     </div>
-    <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-        <div class="template-picker">
-            <select id="profile-template-picker" class="form-select" title="选择资料模板">
-                <option value="">选择资料模板...</option>
+    <div class="bulk-cluster bulk-cluster-end">
+        <div class="bulk-template">
+            <select id="profile-template-picker" class="bulk-select" title="选择资料模板">
+                <option value="">选择资料模板</option>
             </select>
             <button class="btn btn-primary btn-sm" id="applyTemplateBtn" onclick="applySelectedProfileTemplate()">
                 <i class="bi bi-magic"></i>
-                一键套用
+                套用
             </button>
             <button class="btn btn-secondary btn-sm" onclick="showProfileTemplateModal()">
                 <i class="bi bi-collection"></i>
-                管理模板
+                管理
             </button>
         </div>
+        <span class="bulk-divider"></span>
         <button class="btn btn-secondary btn-sm" id="batchHealthBtn" onclick="checkSelectedHealth()">
             <i class="bi bi-shield-check"></i>
-            检测受限状态
+            检测受限
         </button>
-        <button class="btn btn-primary btn-sm" onclick="showBatchProfileModal()">
+        <button class="btn btn-secondary btn-sm" onclick="showBatchProfileModal()">
             <i class="bi bi-person-badge"></i>
-            批量设置名字与简介
+            批量改资料
         </button>
     </div>
 </div>
@@ -1503,9 +1597,11 @@
         return accountList;
     }
 
-    function onHealthFilterChange() {
-        const select = document.getElementById('health-filter');
-        healthFilter = select ? select.value : 'all';
+    function onHealthFilterChange(value) {
+        healthFilter = value || 'all';
+        document.querySelectorAll('#healthFilterSeg .bulk-seg-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.health === healthFilter);
+        });
         renderAccountCards();
     }
 
@@ -2328,7 +2424,7 @@
             const select = document.getElementById(id);
             if (!select) return;
             const current = select.value;
-            const placeholder = id === 'profile-template-picker' ? '选择资料模板...' : '不使用模板';
+            const placeholder = id === 'profile-template-picker' ? '选择资料模板' : '不使用模板';
             select.innerHTML = `<option value="">${placeholder}</option>` + profileTemplates.map(item =>
                 `<option value="${item.template_id}">${escapeHtml(item.title)}</option>`
             ).join('');

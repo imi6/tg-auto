@@ -187,6 +187,7 @@ class GroupLibraryDeleteRequest(BaseModel):
 class MessageTemplateRequest(BaseModel):
     title: str = ""
     content: str = ""
+    image: str = ""
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -408,6 +409,19 @@ class WebApp:
         if value < 0:
             raise HTTPException(status_code=400, detail=f"{key} 不能为负数")
         return value
+
+    def parse_message_image(self, payload: Dict[str, Any], fallback: str = '') -> str:
+        if not isinstance(payload, dict) or 'image' not in payload:
+            return (fallback or '').strip()
+
+        from core.message_media_store import MessageMediaStore
+
+        filename = str(payload.get('image') or '').strip()
+        if not filename:
+            return ''
+        if not MessageMediaStore.is_valid_name(filename) or not MessageMediaStore().resolve(filename):
+            raise HTTPException(status_code=400, detail="图片文件无效，请重新上传")
+        return filename
     
     def borrow_account_credentials(self) -> Optional[tuple]:
         """借用任一已有账号的 API 凭据
@@ -2551,6 +2565,34 @@ class WebApp:
                 "message": f"已用模板「{template.get('title') or '资料模板'}」修改 {len(apply_request.account_ids)} 个账号"
             }
         
+        @self.app.post("/api/message-media")
+        async def upload_message_media(request: Request, file: UploadFile = File(...)):
+            user = self.get_current_user(request)
+            from core.message_media_store import MessageMediaStore, MAX_BYTES
+
+            content = await file.read(MAX_BYTES + 1)
+            store = MessageMediaStore()
+            try:
+                filename = store.save(content, file.content_type or '', file.filename or '')
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            return {
+                "success": True,
+                "filename": filename,
+                "url": store.public_url(filename),
+                "message": "图片已上传"
+            }
+
+        @self.app.get("/media/messages/{filename}")
+        async def get_message_media(request: Request, filename: str):
+            user = self.get_current_user(request)
+            from core.message_media_store import MessageMediaStore
+
+            path = MessageMediaStore().resolve(filename)
+            if not path:
+                raise HTTPException(status_code=404, detail="图片不存在")
+            return FileResponse(path)
+
         @self.app.get("/api/message-templates")
         async def list_message_templates(request: Request, keyword: str = ""):
             user = self.get_current_user(request)
@@ -2561,7 +2603,11 @@ class WebApp:
         async def create_message_template(request: Request, template_request: MessageTemplateRequest):
             user = self.get_current_user(request)
             try:
-                template = self.message_templates.add(template_request.title, template_request.content)
+                template = self.message_templates.add(
+                    template_request.title,
+                    template_request.content,
+                    image=self.parse_message_image({'image': template_request.image})
+                )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             return {"success": True, "template": template, "message": "模板已保存"}
@@ -2574,7 +2620,8 @@ class WebApp:
                 template = self.message_templates.update(
                     template_id,
                     title=template_request.title,
-                    content=template_request.content
+                    content=template_request.content,
+                    image=self.parse_message_image({'image': template_request.image})
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -2631,8 +2678,9 @@ class WebApp:
                         raise HTTPException(status_code=400, detail=f"Cron表达式错误: {error_msg}")
                 
                 account_ids = self.parse_job_account_ids(message)
-                if not message.get("message") and not message.get("use_ai"):
-                    raise HTTPException(status_code=400, detail="消息内容或AI提示词不能为空")
+                image = self.parse_message_image(message)
+                if not message.get("message") and not message.get("use_ai") and not image:
+                    raise HTTPException(status_code=400, detail="请填写消息内容、上传图片，或使用 AI")
                 
                 from core import MonitorEngine
                 from models.config import ScheduledMessageConfig
@@ -2660,7 +2708,8 @@ class WebApp:
                     use_ai=message.get("use_ai", False),
                     ai_prompt=message.get("ai_prompt"),
                     precheck=bool(message.get("precheck", True)),
-                    name=(message.get("name") or "").strip()
+                    name=(message.get("name") or "").strip(),
+                    image=image
                 ))
                 
                 template_id = message.get("template_id")
@@ -2797,11 +2846,15 @@ class WebApp:
                         new_cron = data.get('schedule', data.get('cron', msg.get('cron') or msg.get('schedule')))
                         schedule_mode = data.get('schedule_mode', msg.get('schedule_mode', 'cron'))
                         account_ids = self.parse_job_account_ids(data)
+                        image = self.parse_message_image(data, msg.get('image', ''))
+                        if not data.get("message") and not data.get("use_ai") and not image:
+                            raise HTTPException(status_code=400, detail="请填写消息内容、上传图片，或使用 AI")
                         engine.scheduled_messages[i].update({
                             'account_id': account_ids[0],
                             'account_ids': account_ids,
                             'account_stagger': self.parse_stagger_seconds(data, "account_stagger", msg.get('account_stagger', 0)),
                             'job_stagger': self.parse_stagger_seconds(data, "job_stagger", msg.get('job_stagger', 30)),
+                            'image': image,
                             'message': data.get('message', ''),
                             'channel_id': target_ids[0],
                             'target_id': target_ids[0],
@@ -2816,7 +2869,8 @@ class WebApp:
                                     or engine.default_job_name(
                                         data.get('message', ''),
                                         data.get('use_ai', False),
-                                        data.get('ai_prompt') or ''
+                                        data.get('ai_prompt') or '',
+                                        image
                                     ),
                             'schedule': new_cron,
                             'cron': new_cron,

@@ -186,6 +186,8 @@ class ScheduledMessageConfig:
     send_interval: float = 5
     # 发送前检查目标是否禁言、是否已被移出，跳过发不出去的目标
     precheck: bool = True
+    # 配图文件名，空则只发文字。文件在 data/message_media
+    image: str = ""
     
     def __post_init__(self):
         if not self.target_ids and self.target_id:

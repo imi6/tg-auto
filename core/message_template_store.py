@@ -31,6 +31,10 @@ class MessageTemplateStore(metaclass=Singleton):
             with open(self.store_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self.templates = data.get('templates', data) if isinstance(data, dict) else data
+            for item in self.templates:
+                item.setdefault('image', '')
+                if not item.get('preview') and item.get('image') and not item.get('content'):
+                    item['preview'] = '图片'
         except Exception as e:
             self.logger.error(f"加载消息模板失败: {e}")
             self.templates = []
@@ -67,21 +71,23 @@ class MessageTemplateStore(metaclass=Singleton):
 
         return list(reversed(items))
 
-    def add(self, title: str, content: str) -> Dict[str, Any]:
+    def add(self, title: str, content: str, image: str = '') -> Dict[str, Any]:
         title = (title or '').strip()
         content = (content or '').strip()
-        if not content:
-            raise ValueError('模板内容不能为空')
+        image = (image or '').strip()
+        if not content and not image:
+            raise ValueError('请填写文案或上传图片')
 
         if not title:
-            title = self._preview(content, 24)
+            title = self._preview(content, 24) if content else '图片模板'
 
         now = self._now()
         item = {
             'template_id': f'tpl_{secrets.token_hex(6)}',
             'title': title,
             'content': content,
-            'preview': self._preview(content),
+            'image': image,
+            'preview': self._preview(content) if content else '图片',
             'used_count': 0,
             'created_at': now,
             'updated_at': now,
@@ -92,7 +98,7 @@ class MessageTemplateStore(metaclass=Singleton):
         return dict(item)
 
     def update(self, template_id: str, title: Optional[str] = None,
-               content: Optional[str] = None) -> Optional[Dict[str, Any]]:
+               content: Optional[str] = None, image: Optional[str] = None) -> Optional[Dict[str, Any]]:
         item = self.get(template_id)
         if not item:
             return None
@@ -103,11 +109,17 @@ class MessageTemplateStore(metaclass=Singleton):
                 item['title'] = title
 
         if content is not None:
-            content = content.strip()
-            if not content:
-                raise ValueError('模板内容不能为空')
-            item['content'] = content
-            item['preview'] = self._preview(content)
+            item['content'] = content.strip()
+            item['preview'] = self._preview(item['content']) if item['content'] else ('图片' if (image if image is not None else item.get('image')) else '')
+
+        if image is not None:
+            item['image'] = (image or '').strip()
+
+        if not (item.get('content') or '').strip() and not item.get('image'):
+            raise ValueError('请填写文案或上传图片')
+
+        if not item.get('preview'):
+            item['preview'] = self._preview(item.get('content') or '') if item.get('content') else '图片'
 
         item['updated_at'] = self._now()
         self._save()

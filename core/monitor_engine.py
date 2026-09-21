@@ -143,15 +143,31 @@ class MonitorEngine(metaclass=Singleton):
         return snapshot
 
     @staticmethod
-    def default_job_name(message: str = '', use_ai: bool = False, ai_prompt: str = '') -> str:
+    def default_job_name(message: str = '', use_ai: bool = False, ai_prompt: str = '', image: str = '') -> str:
         text = ' '.join((message or '').split())
         if not text and use_ai:
             text = ' '.join((ai_prompt or '').split()) or 'AI生成消息'
         if not text:
-            return '定时消息'
+            return '图片消息' if image else '定时消息'
         return text if len(text) <= 24 else text[:24] + '…'
 
+    TELEGRAM_CAPTION_LIMIT = 1024
     DEFAULT_JOB_STAGGER = 30.0
+
+    async def _send_job_payload(self, client, target_id, message_text: str, image_path=None):
+        """有图就发图片（文案当说明），没图才发纯文字"""
+        text = (message_text or '').strip()
+        if image_path:
+            path = str(image_path)
+            if text and len(text) <= self.TELEGRAM_CAPTION_LIMIT:
+                await client.send_file(target_id, path, caption=text)
+            elif text:
+                await client.send_file(target_id, path)
+                await client.send_message(target_id, text)
+            else:
+                await client.send_file(target_id, path)
+            return
+        await client.send_message(target_id, text)
 
     @staticmethod
     def get_job_account_ids(message_config: Optional[dict]) -> List[str]:
@@ -1074,6 +1090,7 @@ class MonitorEngine(metaclass=Singleton):
                 'target_ids': target_ids,
                 'send_interval': getattr(config, 'send_interval', 5),
                 'precheck': getattr(config, 'precheck', True),
+                'image': (getattr(config, 'image', '') or '').strip(),
                 'message': config.message,
                 'cron': config.cron,
                 'schedule': config.cron,
@@ -1096,7 +1113,8 @@ class MonitorEngine(metaclass=Singleton):
                 'ai_model': getattr(config, 'ai_model', 'gpt-4o'),
                 'schedule_mode': getattr(config, 'schedule_mode', 'cron'),
                 'name': (getattr(config, 'name', '') or '').strip() or self.default_job_name(
-                    config.message, getattr(config, 'use_ai', False), getattr(config, 'ai_prompt', '') or ''
+                    config.message, getattr(config, 'use_ai', False), getattr(config, 'ai_prompt', '') or '',
+                    getattr(config, 'image', '') or ''
                 ),
                 'target_titles': {},
             }
@@ -1125,7 +1143,8 @@ class MonitorEngine(metaclass=Singleton):
             job_id = item.get('job_id')
             if not (item.get('name') or '').strip():
                 item['name'] = self.default_job_name(
-                    item.get('message', ''), item.get('use_ai', False), item.get('ai_prompt') or ''
+                    item.get('message', ''), item.get('use_ai', False), item.get('ai_prompt') or '',
+                    item.get('image') or ''
                 )
             item.pop('target_stats', None)
             item['next_run_at'] = self.get_next_run_at(job_id) if job_id else None
@@ -1204,7 +1223,8 @@ class MonitorEngine(metaclass=Singleton):
         job_name = (message_config.get('name') or '').strip() or self.default_job_name(
             message_config.get('message', ''),
             message_config.get('use_ai', False),
-            message_config.get('ai_prompt') or ''
+            message_config.get('ai_prompt') or '',
+            message_config.get('image') or ''
         )
 
         excluded_map = {}
@@ -1445,7 +1465,7 @@ class MonitorEngine(metaclass=Singleton):
         return removed
 
     async def _broadcast_to_targets(self, job_id: str, message_config: dict, accounts,
-                                    targets: List[int], message_text: str) -> dict:
+                                    targets: List[int], message_text: str, image_path=None) -> dict:
         """依次把消息发往所有目标，返回本轮汇总
 
         目标可能成百上千，因此逐个发送、逐个记录失败原因，单个目标出错不影响其余目标。
@@ -1542,8 +1562,7 @@ class MonitorEngine(metaclass=Singleton):
                 await asyncio.sleep(account_stagger)
 
             try:
-                # send_message 内部会解析实体，无需额外 get_entity，省掉一半 API 调用
-                await account.client.send_message(target_id, message_text)
+                await self._send_job_payload(account.client, target_id, message_text, image_path)
                 summary['success'] += 1
                 sent_any = True
                 last_account_id = account.account_id
@@ -1574,7 +1593,7 @@ class MonitorEngine(metaclass=Singleton):
                     self.logger.warning(f"⏳ 触发限流，等待 {wait_seconds} 秒后重试目标 {target_id}")
                     await asyncio.sleep(wait_seconds + 1)
                     try:
-                        await account.client.send_message(target_id, message_text)
+                        await self._send_job_payload(account.client, target_id, message_text, image_path)
                         summary['success'] += 1
                         sent_any = True
                         last_account_id = account.account_id
@@ -1741,6 +1760,18 @@ class MonitorEngine(metaclass=Singleton):
                 self._save_scheduled_messages()
                 return
 
+            from core.message_media_store import MessageMediaStore
+            image_name = (message_config.get('image') or '').strip()
+            image_path = MessageMediaStore().resolve(image_name) if image_name else None
+            if image_name and image_path is None:
+                self.logger.error(f"配图文件丢失，跳过发送: {job_id} ({image_name})")
+                self._record_send_result(
+                    message_config, job_id, 'failed', message=message_text,
+                    error="配图文件丢失，请重新上传", stage='content'
+                )
+                self._save_scheduled_messages()
+                return
+
             if message_config.get('use_ai', False) and message_config.get('ai_prompt'):
                 try:
                     from services import AIService
@@ -1775,13 +1806,16 @@ class MonitorEngine(metaclass=Singleton):
                             self.logger.info(
                                 f"✅ AI内容生成成功: \"{message_text[:50]}{'...' if len(message_text) > 50 else ''}\"")
                         else:
-                            self.logger.warning(f"⚠️ AI返回空内容，跳过此次执行")
-                            self._record_send_result(
-                                message_config, job_id, 'skipped',
-                                error="AI 返回空内容", stage='ai'
-                            )
-                            self._save_scheduled_messages()
-                            return
+                            if image_path:
+                                self.logger.warning(f"⚠️ AI返回空内容，本轮只发送配图: {job_id}")
+                            else:
+                                self.logger.warning(f"⚠️ AI返回空内容，跳过此次执行")
+                                self._record_send_result(
+                                    message_config, job_id, 'skipped',
+                                    error="AI 返回空内容", stage='ai'
+                                )
+                                self._save_scheduled_messages()
+                                return
                     else:
                         self.logger.error(f"❌ AI服务未配置，跳过此次执行")
                         self._record_send_result(
@@ -1800,7 +1834,7 @@ class MonitorEngine(metaclass=Singleton):
                     self._save_scheduled_messages()
                     return
 
-            if not message_text or not message_text.strip():
+            if (not message_text or not message_text.strip()) and not image_path:
                 self.logger.error(f"❌ 消息内容为空，跳过发送: {job_id}")
                 self._record_send_result(
                     message_config, job_id, 'skipped',
@@ -1827,7 +1861,7 @@ class MonitorEngine(metaclass=Singleton):
                     await asyncio.sleep(actual_delay)
 
                 summary = await self._broadcast_to_targets(
-                    job_id, message_config, accounts, targets, message_text
+                    job_id, message_config, accounts, targets, message_text, image_path
                 )
             finally:
                 self._running_scheduled_jobs.discard(job_id)
@@ -2032,7 +2066,8 @@ class MonitorEngine(metaclass=Singleton):
                     message['name'] = self.default_job_name(
                         message.get('message', ''),
                         message.get('use_ai', False),
-                        message.get('ai_prompt') or ''
+                        message.get('ai_prompt') or '',
+                        message.get('image') or ''
                     )
                 message.setdefault('target_titles', {})
                 account_ids = self.get_job_account_ids(message)
@@ -2042,6 +2077,7 @@ class MonitorEngine(metaclass=Singleton):
                 message.setdefault('account_stagger', 0)
                 message.setdefault('job_stagger', self.DEFAULT_JOB_STAGGER)
                 message.setdefault('account_cursor', 0)
+                message.setdefault('image', '')
             self.logger.info(f"已加载 {len(self.scheduled_messages)} 条定时消息")
 
         except Exception as e:
