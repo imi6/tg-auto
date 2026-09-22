@@ -1161,7 +1161,7 @@
             <div class="record-summary" id="record-summary"></div>
 
             <div class="record-toolbar" id="target-record-toolbar">
-                <input type="text" class="form-input" id="target-record-search" placeholder="搜索群组名称" oninput="onTargetRecordSearch()" style="max-width: 220px;">
+                <input type="text" class="form-input" id="target-record-search" placeholder="搜索群组或发送账号" oninput="onTargetRecordSearch()" style="max-width: 220px;">
                 <select class="form-select" id="target-record-filter" onchange="onTargetRecordFilter()">
                     <option value="">全部状态</option>
                     <option value="success">成功</option>
@@ -1728,9 +1728,11 @@
             if (!keyword) return true;
             const title = String(row.title || '');
             const jobName = String(row.job_name || '');
+            const account = String(row.last_account || row.last_account_id || '');
             return title.toLowerCase().includes(keyword)
                 || String(row.target_id).includes(keyword)
-                || jobName.toLowerCase().includes(keyword);
+                || jobName.toLowerCase().includes(keyword)
+                || account.toLowerCase().includes(keyword);
         });
     }
 
@@ -1768,6 +1770,7 @@
                         <tr>
                             ${showJob ? '<th>任务</th>' : ''}
                             <th>名称</th>
+                            <th>发送账号</th>
                             <th>最近状态</th>
                             <th>成功次数</th>
                             <th>失败次数</th>
@@ -1785,6 +1788,7 @@
                                         ${row.removed ? '<span class="removed-badge">已移除</span>' : ''}
                                     </div>
                                 </td>
+                                <td>${escapeHtml(row.last_account || (row.last_account_id ? accountLabel(row.last_account_id) : '') || '—')}</td>
                                 <td><span class="status-pill ${row.last_status || 'waiting'}">${RECORD_LABEL[row.last_status] || row.last_status || '等待中'}</span></td>
                                 <td>${row.success || 0}</td>
                                 <td>${row.failed || 0}</td>
@@ -1900,13 +1904,14 @@
                     <div class="record-meta">
                         ${escapeHtml((record.time || '').replace('T', ' '))}
                         · ${formatRecordTargets(record)}
-                        · 账号 ${escapeHtml(record.account_id ? accountLabel(record.account_id) : '未知')}
+                        · 账号 ${escapeHtml(formatRoundAccounts(record))}
                     </div>
                     ${record.error ? `
                         <div class="record-error">
                             ${record.stage ? `[${STAGE_LABEL[record.stage] || record.stage}] ` : ''}${escapeHtml(localizeError(record.error))}
                         </div>
                     ` : ''}
+                    ${renderAccountBreakdown(record)}
                     ${renderFailureList(record)}
                 </div>
             </div>
@@ -1998,11 +2003,40 @@
         return titles[String(targetId)] || titles[targetId] || String(targetId);
     }
 
+    function formatRoundAccounts(record) {
+        const items = (record.targets && record.targets.by_account) || [];
+        if (items.length) {
+            return items.map(item => item.account || accountLabel(item.account_id)).filter(Boolean).join('、') || '未知';
+        }
+        return record.account_id ? accountLabel(record.account_id) : '未知';
+    }
+
+    function renderAccountBreakdown(record) {
+        const items = (record.targets && record.targets.by_account) || [];
+        if (!items.length) return '';
+
+        return items.map(item => {
+            const name = item.account || accountLabel(item.account_id) || item.account_id || '未知账号';
+            const counts = `成功 ${item.success || 0} · 失败 ${item.failed || 0} · 跳过 ${item.skipped || 0}`;
+            const groups = (item.groups || []).map(group => {
+                const label = group.title || group.target_id;
+                const status = RECORD_LABEL[group.status] || group.status || '';
+                return `${escapeHtml(label)}${status ? `（${status}）` : ''}`;
+            }).join('、');
+            return `<details class="record-failures">
+                <summary>${escapeHtml(name)} · ${counts}</summary>
+                <div>${groups || '无群组明细'}</div>
+            </details>`;
+        }).join('');
+    }
+
     function formatTargetItem(item) {
         const label = item.title
             ? `${item.title} (${item.target_id})`
             : String(item.target_id);
-        return `${escapeHtml(label)}: ${escapeHtml(localizeError(item.error))}`;
+        const account = item.account || (item.account_id ? accountLabel(item.account_id) : '');
+        const prefix = account ? `[${account}] ` : '';
+        return `${escapeHtml(prefix + label)}: ${escapeHtml(localizeError(item.error))}`;
     }
 
     function formatTargets(msg) {

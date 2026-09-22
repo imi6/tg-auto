@@ -1154,7 +1154,7 @@ class MonitorEngine(metaclass=Singleton):
         return result
 
     def _touch_target_stat(self, message_config: dict, target_id: int, status: str,
-                           error: str = '', title: str = ''):
+                           error: str = '', title: str = '', account=None):
         """按目标累计成功/失败次数，供发送记录表格展示"""
         stats = message_config.setdefault('target_stats', {})
         key = str(target_id)
@@ -1180,6 +1180,10 @@ class MonitorEngine(metaclass=Singleton):
         item['target_id'] = target_id
         item['last_status'] = status
         item['last_time'] = datetime.now().isoformat(timespec='seconds')
+        account_id, account_label = self._account_info(account)
+        if account_id:
+            item['last_account_id'] = account_id
+            item['last_account'] = account_label
         if status == 'success':
             item['success'] = int(item.get('success') or 0) + 1
             item['last_error'] = None
@@ -1191,6 +1195,14 @@ class MonitorEngine(metaclass=Singleton):
             item['last_error'] = error or None
 
         return item
+
+    @staticmethod
+    def _account_info(account) -> tuple:
+        if not account:
+            return '', ''
+        account_id = str(getattr(account, 'account_id', '') or '')
+        label = str(getattr(account, 'phone', None) or account_id)
+        return account_id, label
 
     def list_target_stats(self, job_id: Optional[str] = None) -> List[dict]:
         jobs = self.scheduled_messages
@@ -1277,6 +1289,8 @@ class MonitorEngine(metaclass=Singleton):
                 'last_status': last_status,
                 'last_time': last_time,
                 'last_error': last_error,
+                'last_account_id': raw.get('last_account_id') or '',
+                'last_account': raw.get('last_account') or '',
                 'removed': target_id not in current_set,
             })
         return rows
@@ -1550,8 +1564,9 @@ class MonitorEngine(metaclass=Singleton):
                 self._remember_target_title(message_config, target_id, title)
                 if PrecheckService.is_blocking(check['code']):
                     self.logger.info(f"⏭️ 跳过目标 {title or target_id}: {check['reason']}")
-                    self._collect_skip(summary, target_id, check['reason'], title)
-                    self._touch_target_stat(message_config, target_id, 'skipped', check['reason'], title)
+                    self._collect_skip(summary, target_id, check['reason'], title, account)
+                    self._touch_target_stat(message_config, target_id, 'skipped', check['reason'], title, account)
+                    self._note_account_send(summary, account, 'skipped', target_id, title)
                     rotate_i += 1
                     publish()
                     continue
@@ -1566,7 +1581,8 @@ class MonitorEngine(metaclass=Singleton):
                 summary['success'] += 1
                 sent_any = True
                 last_account_id = account.account_id
-                self._touch_target_stat(message_config, target_id, 'success', '', title)
+                self._touch_target_stat(message_config, target_id, 'success', '', title, account)
+                self._note_account_send(summary, account, 'success', target_id, title)
                 rotate_i += 1
                 publish()
 
@@ -1578,8 +1594,9 @@ class MonitorEngine(metaclass=Singleton):
                         self.logger.error(
                             f"⛔ 账号 {account.account_id} 触发限流需等待 {wait_seconds} 秒，本轮停用该号"
                         )
-                        self._collect_failure(summary, target_id, f"触发限流，需等待 {wait_seconds} 秒", title)
-                        self._touch_target_stat(message_config, target_id, 'failed', f"触发限流，需等待 {wait_seconds} 秒", title)
+                        self._collect_failure(summary, target_id, f"触发限流，需等待 {wait_seconds} 秒", title, account)
+                        self._touch_target_stat(message_config, target_id, 'failed', f"触发限流，需等待 {wait_seconds} 秒", title, account)
+                        self._note_account_send(summary, account, 'failed', target_id, title)
                         drop_account(account, f"群发时触发限流，需等待 {wait_seconds} 秒", mark_limited=False)
                         rotate_i += 1
                         if not pool:
@@ -1597,7 +1614,8 @@ class MonitorEngine(metaclass=Singleton):
                         summary['success'] += 1
                         sent_any = True
                         last_account_id = account.account_id
-                        self._touch_target_stat(message_config, target_id, 'success', '', title)
+                        self._touch_target_stat(message_config, target_id, 'success', '', title, account)
+                        self._note_account_send(summary, account, 'success', target_id, title)
                         rotate_i += 1
                         publish()
                         continue
@@ -1609,8 +1627,9 @@ class MonitorEngine(metaclass=Singleton):
                 skip_reason = self._is_unsendable_error(send_error)
                 if skip_reason:
                     self.logger.info(f"⏭️ 跳过目标 {title or target_id}: {skip_reason}")
-                    self._collect_skip(summary, target_id, skip_reason, title)
-                    self._touch_target_stat(message_config, target_id, 'skipped', skip_reason, title)
+                    self._collect_skip(summary, target_id, skip_reason, title, account)
+                    self._touch_target_stat(message_config, target_id, 'skipped', skip_reason, title, account)
+                    self._note_account_send(summary, account, 'skipped', target_id, title)
                     rotate_i += 1
                     publish()
                     continue
@@ -1618,8 +1637,9 @@ class MonitorEngine(metaclass=Singleton):
                 if self._is_spamblock_error(send_error):
                     # 账号级风控：停用该号。还有其他号则继续轮询，不再整轮中止
                     drop_account(account, f"群发时触发风控: {reason}")
-                    self._collect_failure(summary, target_id, f"账号触发风控: {reason}", title)
-                    self._touch_target_stat(message_config, target_id, 'failed', f"账号触发风控: {reason}", title)
+                    self._collect_failure(summary, target_id, f"账号触发风控: {reason}", title, account)
+                    self._touch_target_stat(message_config, target_id, 'failed', f"账号触发风控: {reason}", title, account)
+                    self._note_account_send(summary, account, 'failed', target_id, title)
                     rotate_i += 1
                     if not pool:
                         summary['stopped'] = True
@@ -1630,14 +1650,19 @@ class MonitorEngine(metaclass=Singleton):
                     continue
 
                 self.logger.error(f"❌ 发送失败 {title or target_id}: {reason}")
-                self._collect_failure(summary, target_id, reason, title)
-                self._touch_target_stat(message_config, target_id, 'failed', reason, title)
+                self._collect_failure(summary, target_id, reason, title, account)
+                self._touch_target_stat(message_config, target_id, 'failed', reason, title, account)
+                self._note_account_send(summary, account, 'failed', target_id, title)
                 last_account_id = account.account_id
                 rotate_i += 1
                 publish()
 
         if accounts:
             message_config['account_cursor'] = rotate_i % max(len(self.get_job_account_ids(message_config)), 1)
+
+        account_map = summary.pop('by_account_map', None) or {}
+        if account_map:
+            summary['by_account'] = list(account_map.values())
 
         return summary
 
@@ -1653,23 +1678,52 @@ class MonitorEngine(metaclass=Singleton):
         titles = message_config.setdefault('target_titles', {})
         titles[str(target_id)] = title
 
-    def _collect_failure(self, summary: dict, target_id: int, reason: str, title: str = ''):
+    def _collect_failure(self, summary: dict, target_id: int, reason: str, title: str = '', account=None):
         """累计失败数，明细只留前 50 条，避免上千目标撑爆记录文件"""
         summary['failed'] += 1
         if len(summary['failures']) < 50:
             item = {'target_id': target_id, 'error': reason}
             if title:
                 item['title'] = title
+            account_id, account_label = self._account_info(account)
+            if account_id:
+                item['account_id'] = account_id
+                item['account'] = account_label
             summary['failures'].append(item)
 
-    def _collect_skip(self, summary: dict, target_id: int, reason: str, title: str = ''):
+    def _collect_skip(self, summary: dict, target_id: int, reason: str, title: str = '', account=None):
         """预检未通过的目标同样只留前 50 条明细"""
         summary['skipped'] += 1
         if len(summary['skips']) < 50:
             item = {'target_id': target_id, 'error': reason}
             if title:
                 item['title'] = title
+            account_id, account_label = self._account_info(account)
+            if account_id:
+                item['account_id'] = account_id
+                item['account'] = account_label
             summary['skips'].append(item)
+
+    def _note_account_send(self, summary: dict, account, status: str, target_id: int, title: str = ''):
+        """按账号汇总本轮发了哪些群，方便发送记录对号入座"""
+        account_id, account_label = self._account_info(account)
+        if not account_id:
+            return
+        bucket = summary.setdefault('by_account_map', {}).setdefault(account_id, {
+            'account_id': account_id,
+            'account': account_label,
+            'success': 0,
+            'failed': 0,
+            'skipped': 0,
+            'groups': [],
+        })
+        if status in ('success', 'failed', 'skipped'):
+            bucket[status] = int(bucket.get(status) or 0) + 1
+        if len(bucket['groups']) < 40:
+            group = {'target_id': target_id, 'status': status}
+            if title:
+                group['title'] = title
+            bucket['groups'].append(group)
 
     async def run_scheduled_message_now(self, job_id: str):
         """立刻执行一轮，不走 Cron / 间隔，也不算进执行次数，方便测试"""
