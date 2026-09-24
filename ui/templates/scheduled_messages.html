@@ -960,6 +960,21 @@
         justify-content: flex-end;
         gap: 12px;
     }
+
+    .modal-footer .btn-test {
+        margin-right: auto;
+    }
+
+    #testSendModal {
+        z-index: 10020;
+    }
+
+    .test-group-list {
+        max-height: 320px;
+        overflow-y: auto;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+    }
     
     .form-group {
         margin-bottom: 20px;
@@ -1414,10 +1429,39 @@
         </div>
         
         <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-            <button class="btn btn-primary" onclick="saveMessage()">
+            <button type="button" class="btn btn-secondary btn-test" id="testSendBtn" onclick="openTestSend()">
+                <i class="bi bi-send"></i>
+                测试发送
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+            <button type="button" class="btn btn-primary" onclick="saveMessage()">
                 <i class="bi bi-check-lg"></i>
                 保存
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="modal" id="testSendModal">
+    <div class="modal-content" style="max-width: 480px;">
+        <div class="modal-header">
+            <h3 class="modal-title">选择一个群发送测试</h3>
+            <button type="button" class="modal-close" onclick="closeTestSend()">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <p class="text-muted" style="margin-top: 0; font-size: 13px;">
+                用当前文案和配图，由第一个勾选的账号发到你选的这一个群。不会保存任务，也不会发给其他群。
+            </p>
+            <input type="text" class="form-input" id="test-group-search" placeholder="搜索群组名称" oninput="renderTestGroups()" style="margin-bottom: 10px;">
+            <div class="test-group-list" id="test-group-list"></div>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" onclick="closeTestSend()">取消</button>
+            <button type="button" class="btn btn-primary" id="confirmTestSendBtn" onclick="submitTestSend()">
+                <i class="bi bi-send"></i>
+                发送
             </button>
         </div>
     </div>
@@ -2707,6 +2751,7 @@
     
     function closeModal() {
         document.getElementById('messageModal').classList.remove('show');
+        closeTestSend();
         editingId = null;
     }
 
@@ -2924,6 +2969,108 @@
         }
     }
     
+    function testGroupPool() {
+        const byId = new Map((targetOptions || []).map(item => [String(item.id), item]));
+        const selected = collectTargetIds();
+        const chats = (targetOptions || []).filter(item => item.type === 'group' || item.type === 'channel');
+        const pinned = selected
+            .map(id => byId.get(String(id)) || { id, name: `已选目标 ${id}`, type: 'group' })
+            .filter(item => item.type !== 'user' && item.type !== 'bot');
+        const pinnedIds = new Set(pinned.map(item => String(item.id)));
+        return pinned.concat(chats.filter(item => !pinnedIds.has(String(item.id))));
+    }
+
+    function openTestSend() {
+        const accountId = primaryJobAccount();
+        if (!accountId) {
+            showNotification('请先选择发送账号', 'warning');
+            return;
+        }
+        const messageType = document.querySelector('input[name="message_type"]:checked').value;
+        if (messageType === 'text') {
+            const content = document.getElementById('message-content').value.trim();
+            if (!content && !jobImage) {
+                showNotification('请先填写消息内容或上传图片', 'warning');
+                return;
+            }
+        } else if (!document.getElementById('ai-prompt').value.trim() && !jobImage) {
+            showNotification('请先填写 AI 提示词或上传图片', 'warning');
+            return;
+        }
+        if (!targetOptions.length) {
+            showNotification('群组列表还没加载完，请稍后再试', 'warning');
+            loadTargetOptions(true);
+            return;
+        }
+        document.getElementById('test-group-search').value = '';
+        document.getElementById('testSendModal').classList.add('show');
+        renderTestGroups();
+    }
+
+    function closeTestSend() {
+        document.getElementById('testSendModal').classList.remove('show');
+    }
+
+    function renderTestGroups() {
+        const list = document.getElementById('test-group-list');
+        const keyword = (document.getElementById('test-group-search').value || '').trim().toLowerCase();
+        const selected = new Set(collectTargetIds().map(String));
+        const rows = testGroupPool().filter(item => {
+            if (!keyword) return true;
+            return `${item.name || ''} ${item.id} ${item.username || ''}`.toLowerCase().includes(keyword);
+        });
+        if (!rows.length) {
+            list.innerHTML = '<div class="target-empty">没有可选的群</div>';
+            return;
+        }
+        list.innerHTML = rows.map(item => `
+            <label class="target-option">
+                <input type="radio" name="test-target" value="${item.id}">
+                <span class="target-option-body">
+                    <span class="target-option-name">${escapeHtml(item.name || item.id)}</span>
+                    <span class="target-option-meta">${selected.has(String(item.id)) ? '已加入本任务 · ' : ''}${escapeHtml(item.id)}</span>
+                </span>
+            </label>
+        `).join('');
+    }
+
+    async function submitTestSend() {
+        const picked = document.querySelector('input[name="test-target"]:checked');
+        if (!picked) {
+            showNotification('请选择一个群', 'warning');
+            return;
+        }
+        const messageType = document.querySelector('input[name="message_type"]:checked').value;
+        const button = document.getElementById('confirmTestSendBtn');
+        button.disabled = true;
+        try {
+            const response = await fetch('/api/scheduled-messages/test-send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    account_id: primaryJobAccount(),
+                    target_id: parseInt(picked.value, 10),
+                    message: messageType === 'text' ? document.getElementById('message-content').value : '',
+                    image: jobImage,
+                    use_ai: messageType === 'ai',
+                    ai_prompt: messageType === 'ai' ? document.getElementById('ai-prompt').value : ''
+                })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+                showNotification(data.detail || data.message || '测试发送失败', 'error');
+                return;
+            }
+            showNotification(data.message || '测试消息已发送', 'success');
+            closeTestSend();
+        } catch (error) {
+            console.error('测试发送失败:', error);
+            showNotification('测试发送失败', 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
     async function saveMessage() {
         const messageType = document.querySelector('input[name="message_type"]:checked').value;
         const maxExecutionsInput = document.getElementById('max-executions');

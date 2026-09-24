@@ -2915,6 +2915,57 @@ class WebApp:
                 self.logger.error(f"更新定时消息失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
+        @self.app.post("/api/scheduled-messages/test-send")
+        async def test_send_scheduled_message(request: Request):
+            user = self.get_current_user(request)
+            data = await request.json()
+            account_id = str(data.get("account_id") or "").strip()
+            if not account_id:
+                raise HTTPException(status_code=400, detail="请先选择发送账号")
+            try:
+                target_id = int(data.get("target_id"))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="请选择一个群")
+
+            image = self.parse_message_image(data) if data.get("image") else ""
+            message_text = str(data.get("message") or "").strip()
+            use_ai = bool(data.get("use_ai"))
+            ai_prompt = str(data.get("ai_prompt") or "").strip()
+            if use_ai:
+                if not ai_prompt and not image:
+                    raise HTTPException(status_code=400, detail="请填写 AI 提示词或上传图片")
+                if ai_prompt:
+                    from services import AIService
+                    ai_service = AIService()
+                    if not ai_service.is_configured():
+                        raise HTTPException(status_code=400, detail="AI 服务未配置")
+                    generated = await ai_service.get_chat_completion([
+                        {"role": "user", "content": ai_prompt}
+                    ])
+                    message_text = (generated or "").strip()
+                    if not message_text and not image:
+                        raise HTTPException(status_code=400, detail="AI 返回空内容")
+            elif not message_text and not image:
+                raise HTTPException(status_code=400, detail="请填写消息内容或上传图片")
+
+            client = await self.get_connected_client(account_id)
+            if not client:
+                raise HTTPException(status_code=400, detail="账号未连接或未登录")
+
+            from core.message_media_store import MessageMediaStore
+            image_path = MessageMediaStore().resolve(image) if image else None
+            if image and image_path is None:
+                raise HTTPException(status_code=400, detail="配图文件丢失，请重新上传")
+
+            engine = MonitorEngine()
+            try:
+                await engine._send_job_payload(client, target_id, message_text, image_path)
+            except Exception as send_error:
+                reason = engine._is_unsendable_error(send_error) or engine._humanize_send_error(send_error)
+                return {"success": False, "message": reason}
+
+            return {"success": True, "message": "测试消息已发送到所选群"}
+
         @self.app.post("/api/scheduled-messages/{job_id}/run")
         async def run_scheduled_message_now(request: Request, job_id: str):
             user = self.get_current_user(request)
