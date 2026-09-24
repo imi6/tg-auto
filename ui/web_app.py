@@ -1001,6 +1001,7 @@ class WebApp:
                     
                     user_id = getattr(account, 'own_user_id', None) or getattr(account, 'user_id', None)
                     name = None
+                    username = None
                     if account.client and is_valid:
                         try:
                             me = await account.client.get_me()
@@ -1008,6 +1009,7 @@ class WebApp:
                                 first_name = getattr(me, 'first_name', '') or ''
                                 last_name = getattr(me, 'last_name', '') or ''
                                 name = f"{first_name} {last_name}".strip() if first_name or last_name else None
+                                username = getattr(me, 'username', None) or None
                         except Exception:
                             pass
                     
@@ -1026,6 +1028,7 @@ class WebApp:
                         "account_id": account.account_id,
                         "phone": account.config.phone,
                         "name": name,
+                        "username": username,
                         "user_id": user_id,
                         "monitor_active": getattr(account, 'monitor_active', False),
                         "monitor_count": monitor_count,

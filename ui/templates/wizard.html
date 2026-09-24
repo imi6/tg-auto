@@ -1271,6 +1271,7 @@
 
         container.innerHTML = formHtml;
 
+        fillWizardAccountOptions();
         setupConditionalFields(step.step.fields);
 
         updateWizardUI();
@@ -1887,6 +1888,30 @@
         });
     });
 
+    function accountOptionLabel(account) {
+        const name = (account.name || '').trim();
+        const handle = account.username ? `@${String(account.username).replace(/^@/, '')}` : '';
+        const phone = account.phone || account.account_id || '';
+        const who = [name, handle].filter(Boolean).join(' ');
+        return who ? `${who} · ${phone}` : phone;
+    }
+
+    function fillWizardAccountOptions() {
+        const select = document.querySelector('select[name="account_id"]');
+        if (!select) return;
+
+        fetch('/api/accounts')
+            .then(res => res.json())
+            .then(data => {
+                const accounts = data.accounts || [];
+                accounts.forEach(account => {
+                    const option = Array.from(select.options).find(item => item.value === account.account_id);
+                    if (option) option.textContent = accountOptionLabel(account);
+                });
+            })
+            .catch(err => console.error('Failed to load account names:', err));
+    }
+
     function loadAccounts() {
         fetch('/api/accounts')
             .then(res => res.json())
@@ -1897,7 +1922,7 @@
                     accounts.forEach(account => {
                         const option = document.createElement('option');
                         option.value = account.account_id;
-                        option.textContent = `${account.phone} ${account.name ? '(' + account.name + ')' : ''}`;
+                        option.textContent = accountOptionLabel(account);
                         select.appendChild(option);
                     });
 

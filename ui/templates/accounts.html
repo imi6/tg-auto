@@ -180,6 +180,16 @@
         white-space: nowrap;
     }
 
+    .bulk-delete {
+        color: var(--danger-color);
+        background: rgba(239, 68, 68, 0.08);
+        border: 1px solid rgba(239, 68, 68, 0.28);
+    }
+
+    .bulk-delete:hover {
+        background: rgba(239, 68, 68, 0.16);
+    }
+
     .bulk-divider {
         width: 1px;
         height: 22px;
@@ -838,6 +848,10 @@
         <button class="btn btn-secondary btn-sm" onclick="showBatchProfileModal()">
             <i class="bi bi-person-badge"></i>
             批量改资料
+        </button>
+        <button type="button" class="btn btn-sm bulk-delete" onclick="deleteSelectedAccounts()">
+            <i class="bi bi-trash"></i>
+            删除选中
         </button>
     </div>
 </div>
@@ -1927,6 +1941,41 @@
         }
     }
     
+    async function deleteSelectedAccounts() {
+        const ids = Array.from(selectedAccountIds);
+        if (!ids.length) {
+            showNotification('请先勾选要删除的账号', 'warning');
+            return;
+        }
+        if (!confirm(`确定删除选中的 ${ids.length} 个账号吗？监控配置会一并删除，相关定时消息会暂停，且不可恢复。`)) {
+            return;
+        }
+
+        let removed = 0;
+        const failed = [];
+        for (const accountId of ids) {
+            try {
+                const response = await fetch(`/api/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
+                const result = await response.json().catch(() => ({}));
+                if (result.success) {
+                    removed += 1;
+                    selectedAccountIds.delete(accountId);
+                } else {
+                    failed.push(result.message || accountId);
+                }
+            } catch (error) {
+                failed.push(accountId);
+            }
+        }
+
+        await loadAccounts();
+        if (!failed.length) {
+            showNotification(`已删除 ${removed} 个账号`, 'success');
+            return;
+        }
+        showNotification(`已删除 ${removed} 个，${failed.length} 个失败`, 'warning');
+    }
+
     async function deleteAccount(accountId, phone) {
         if (!confirm(`确定要删除账号 ${phone} 吗？此操作将删除该账号的所有监控器配置，不可恢复！`)) {
             return;

@@ -1170,7 +1170,7 @@ class ConfigWizard(metaclass=Singleton):
                     account_manager = AccountManager()
                     accounts = account_manager.list_accounts()
                     field_copy["options"] = [
-                        {"value": str(acc.account_id), "label": f"{acc.config.phone} ({acc.account_id})"}
+                        {"value": str(acc.account_id), "label": acc.config.phone or str(acc.account_id)}
                         for acc in accounts
                     ]
 
@@ -2323,7 +2323,7 @@ class ConfigWizard(metaclass=Singleton):
         return [
             {
                 "id": acc.account_id,
-                "name": f"{acc.config.phone} ({acc.account_id})",
+                "name": acc.config.phone or str(acc.account_id),
                 "phone": acc.config.phone,
                 "connected": acc.is_connected()
             }
