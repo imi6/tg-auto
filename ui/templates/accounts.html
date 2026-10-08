@@ -1947,7 +1947,7 @@
             showNotification('请先勾选要删除的账号', 'warning');
             return;
         }
-        if (!confirm(`确定删除选中的 ${ids.length} 个账号吗？监控配置会一并删除，相关定时消息会暂停，且不可恢复。`)) {
+        if (!confirm(`确定删除选中的 ${ids.length} 个账号吗？监控配置和入群历史会一并删除，相关定时消息会暂停，且不可恢复。`)) {
             return;
         }
 
@@ -1977,7 +1977,7 @@
     }
 
     async function deleteAccount(accountId, phone) {
-        if (!confirm(`确定要删除账号 ${phone} 吗？此操作将删除该账号的所有监控器配置，不可恢复！`)) {
+        if (!confirm(`确定要删除账号 ${phone} 吗？此操作将删除该账号的监控器配置和入群历史，不可恢复！`)) {
             return;
         }
         

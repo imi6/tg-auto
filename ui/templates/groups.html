@@ -2116,6 +2116,17 @@
         }
     };
 
+    window.handleJoinTasksRemoved = function (payload) {
+        const ids = new Set((payload && payload.task_ids) || []);
+        if (!ids.size) return;
+        tasks = tasks.filter(task => !ids.has(task.task_id));
+        if (currentTab === 'tasks') {
+            renderTasks();
+        } else {
+            updateRunningBadge();
+        }
+    };
+
     document.getElementById('joinModal').addEventListener('click', function (event) {
         if (event.target === this) closeJoinModal();
     });

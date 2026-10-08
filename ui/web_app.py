@@ -1340,10 +1340,20 @@ class WebApp:
                 if success:
                     self.monitor_engine.remove_all_monitors(account_id)
                     paused = self.monitor_engine.pause_account_scheduled_messages(account_id)
+                    purged = self.join_task_manager.remove_account_history(account_id)
+                    for task in purged['updated_tasks']:
+                        await self._on_join_task_update(task)
+                    if purged['removed_task_ids']:
+                        await self.broadcast_message({
+                            "type": "join_task_removed",
+                            "data": {"task_ids": purged['removed_task_ids']},
+                        })
                     await self.broadcast_status_update()
                     message = "账号删除成功"
                     if paused:
                         message += f"，已暂停该账号的 {paused} 条定时消息"
+                    if purged['removed_records']:
+                        message += f"，已清除该账号的 {purged['removed_records']} 条入群记录"
                     return {"success": True, "message": message}
                 else:
                     return {"success": False, "message": "账号不存在"}

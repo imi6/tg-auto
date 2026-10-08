@@ -1405,6 +1405,10 @@
                 if (typeof window.handleJoinTaskUpdate === 'function') {
                     window.handleJoinTaskUpdate(data.data);
                 }
+            } else if (data.type === 'join_task_removed') {
+                if (typeof window.handleJoinTasksRemoved === 'function') {
+                    window.handleJoinTasksRemoved(data.data);
+                }
             } else if (data.type === 'profile_task_update') {
                 if (typeof window.handleProfileTaskUpdate === 'function') {
                     window.handleProfileTaskUpdate(data.data);

@@ -121,8 +121,15 @@ class BatchTaskManager:
             self._listeners.append(listener)
 
     async def _notify(self, task: Dict[str, Any], persist: bool = True):
+        task_id = task.get('task_id')
+        if task_id not in self.tasks:
+            return
+
         if persist:
             self._save_tasks()
+
+        if task_id not in self.tasks:
+            return
 
         for listener in list(self._listeners):
             try:
@@ -222,6 +229,74 @@ class BatchTaskManager:
         self._save_tasks()
         return True
 
+    def remove_account_history(self, account_id: str) -> Dict[str, Any]:
+        """删掉某个账号在历史任务里的明细。
+
+        任务里还有其他账号时只摘掉该账号并重算汇总；没有剩余账号则整条任务删除。
+        正在执行且已无账号的任务会标记取消，避免跑完后又被写回列表。
+        """
+        removed_records = 0
+        removed_task_ids: List[str] = []
+        updated_tasks: List[Dict[str, Any]] = []
+
+        for task_id, task in list(self.tasks.items()):
+            accounts = task.get('accounts') or {}
+            state = accounts.get(account_id)
+            if not state:
+                continue
+
+            removed_records += len(state.get('items') or [])
+            accounts.pop(account_id, None)
+
+            if accounts:
+                self._recompute_summary(task)
+                updated_tasks.append(task)
+                continue
+
+            if task.get('status') == TASK_RUNNING:
+                self._cancelled.add(task_id)
+            del self.tasks[task_id]
+            removed_task_ids.append(task_id)
+
+        if removed_records or removed_task_ids or updated_tasks:
+            self._save_tasks()
+
+        if removed_records:
+            self.logger.info(
+                f"已清除账号 {account_id} 的 {removed_records} 条{self.task_label}记录，"
+                f"删除任务 {len(removed_task_ids)} 个"
+            )
+
+        return {
+            'removed_records': removed_records,
+            'removed_task_ids': removed_task_ids,
+            'updated_tasks': updated_tasks,
+        }
+
+    def _account_present(self, task_id: str, account_id: str) -> bool:
+        task = self.tasks.get(task_id)
+        return bool(task and account_id in (task.get('accounts') or {}))
+
+    def _recompute_summary(self, task: Dict[str, Any]) -> None:
+        accounts = task.get('accounts') or {}
+        summary = {
+            'total': len(task.get('items') or []) * len(accounts),
+            'done': 0,
+        }
+        for status in SUMMARY_STATUSES:
+            summary[status] = 0
+
+        for state in accounts.values():
+            for record in state.get('items') or []:
+                summary['done'] += 1
+                status = record.get('status', STATUS_FAILED)
+                if status in summary:
+                    summary[status] += 1
+                else:
+                    summary[STATUS_FAILED] += 1
+
+        task['summary'] = summary
+
     # -------------------------------------------------------------- 任务执行
 
     async def _run_task(self, task_id: str):
@@ -236,11 +311,15 @@ class BatchTaskManager:
         except Exception as e:
             self.logger.error(f"{self.task_label} {task_id} 执行异常: {e}")
         finally:
+            self._runners.pop(task_id, None)
+            if task_id not in self.tasks:
+                self._cancelled.discard(task_id)
+                return
+
             cancelled = task_id in self._cancelled
             task['status'] = TASK_CANCELLED if cancelled else TASK_COMPLETED
             task['finished_at'] = datetime.now().isoformat()
             self._cancelled.discard(task_id)
-            self._runners.pop(task_id, None)
 
             summary = task['summary']
             self.logger.info(
@@ -250,7 +329,9 @@ class BatchTaskManager:
             await self._notify(task)
 
     async def _run_account(self, task_id: str, account_id: str):
-        task = self.tasks[task_id]
+        task = self.tasks.get(task_id)
+        if not task or account_id not in (task.get('accounts') or {}):
+            return
         state = task['accounts'][account_id]
         options = task['options']
 
@@ -269,6 +350,8 @@ class BatchTaskManager:
         await self._notify(task)
 
         for index, item in enumerate(task['items']):
+            if not self._account_present(task_id, account_id):
+                return
             if task_id in self._cancelled:
                 state['status'] = ACCOUNT_CANCELLED
                 await self._notify(task)
@@ -280,7 +363,9 @@ class BatchTaskManager:
                 delay = random.randint(options['delay_min'], options['delay_max'])
                 state['current'] = {'target': label, 'waiting_seconds': delay}
                 await self._notify(task, persist=False)
-                if not await self._sleep_cancellable(task_id, delay):
+                if not await self._sleep_cancellable(task_id, delay, account_id):
+                    if not self._account_present(task_id, account_id):
+                        return
                     state['status'] = ACCOUNT_CANCELLED
                     await self._notify(task)
                     return
@@ -316,11 +401,15 @@ class BatchTaskManager:
         触发 FloodWait 时等待结束后重试当前目标，可多次等待。
         返回 None 只表示任务被取消，限流本身不会中止账号剩余目标。
         """
-        task = self.tasks[task_id]
+        task = self.tasks.get(task_id)
+        if not task or account_id not in (task.get('accounts') or {}):
+            return None
         state = task['accounts'][account_id]
         flood_rounds = 0
 
         while True:
+            if not self._account_present(task_id, account_id):
+                return None
             if task_id in self._cancelled:
                 state['status'] = ACCOUNT_CANCELLED
                 await self._notify(task)
@@ -354,7 +443,9 @@ class BatchTaskManager:
             await self._notify(task)
 
             # Telegram 的 seconds 是最短等待，多留 2 秒再动手，减少刚等到又被限
-            if not await self._sleep_cancellable(task_id, wait_seconds + 2):
+            if not await self._sleep_cancellable(task_id, wait_seconds + 2, account_id):
+                if not self._account_present(task_id, account_id):
+                    return None
                 state['status'] = ACCOUNT_CANCELLED
                 await self._notify(task)
                 return None
@@ -384,18 +475,26 @@ class BatchTaskManager:
             self.logger.error(f"准备账号 {account_id} 客户端失败: {e}")
             return None
 
-    async def _sleep_cancellable(self, task_id: str, seconds: int) -> bool:
-        """分片休眠，任务被取消时立即返回 False"""
+    async def _sleep_cancellable(self, task_id: str, seconds: int, account_id: Optional[str] = None) -> bool:
+        """分片休眠，任务被取消或账号已从任务中移除时立即返回 False"""
         remaining = seconds
         while remaining > 0:
             if task_id in self._cancelled:
                 return False
+            if account_id and not self._account_present(task_id, account_id):
+                return False
             await asyncio.sleep(1)
             remaining -= 1
+        if account_id and not self._account_present(task_id, account_id):
+            return False
         return task_id not in self._cancelled
 
     def _record(self, task: Dict[str, Any], account_id: str, item: Dict[str, Any], result: Dict[str, Any]):
-        state = task['accounts'][account_id]
+        if task.get('task_id') not in self.tasks:
+            return
+        state = (task.get('accounts') or {}).get(account_id)
+        if not state:
+            return
         status = result.get('status', STATUS_FAILED)
 
         state['items'].append({
