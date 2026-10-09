@@ -100,10 +100,7 @@ class PrecheckService:
                 can_post = is_creator or bool(admin_rights and getattr(admin_rights, 'post_messages', False))
                 return cls._result(CODE_OK, title) if can_post else cls._result(CODE_ADMIN_ONLY, title)
 
-            # 开启话题的超级群不能往群根节点发普通消息，Telegram 会回 cannot send plain results
-            if getattr(entity, 'forum', False):
-                return cls._result(CODE_FORUM, title, '该群开启了话题，不能直接往群里发普通消息')
-
+            # 话题群发送时会改投到一个未关闭的话题，这里不再提前拦住
             if not (is_creator or admin_rights) and cls._muted(getattr(entity, 'default_banned_rights', None)):
                 return cls._result(CODE_MUTED_ALL, title)
 

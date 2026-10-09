@@ -155,8 +155,26 @@ class MonitorEngine(metaclass=Singleton):
     DEFAULT_JOB_STAGGER = 30.0
 
     async def _send_job_payload(self, client, target_id, message_text: str, image_path=None):
-        """有图就发图片（文案当说明），没图才发纯文字"""
+        """有图就发图片（文案当说明），没图才发纯文字
+
+        话题群不能往群根上发，失败后再改投到一个未关闭的话题。
+        """
+        try:
+            await self._deliver_payload(client, target_id, message_text, image_path)
+        except Exception as send_error:
+            if 'cannot send plain results' not in str(send_error).lower():
+                raise
+            topic_id = await self._open_forum_topic_id(client, target_id)
+            if not topic_id:
+                raise
+            self.logger.info(f"话题群 {target_id} 改发到话题 {topic_id}")
+            await self._deliver_payload(client, target_id, message_text, image_path, reply_to=topic_id)
+
+    async def _deliver_payload(self, client, target_id, message_text: str, image_path=None, reply_to=None):
         text = (message_text or '').strip()
+        if reply_to:
+            await self._deliver_to_topic(client, target_id, text, image_path, reply_to)
+            return
         if image_path:
             path = str(image_path)
             if text and len(text) <= self.TELEGRAM_CAPTION_LIMIT:
@@ -168,6 +186,72 @@ class MonitorEngine(metaclass=Singleton):
                 await client.send_file(target_id, path)
             return
         await client.send_message(target_id, text)
+
+    async def _deliver_to_topic(self, client, target_id, text: str, image_path, topic_id: int):
+        """话题群必须带 top_msg_id，只 reply 到话题根消息仍会被当成往群根发送。"""
+        import os
+        from telethon.tl.functions.messages import SendMediaRequest, SendMessageRequest
+        from telethon.tl.types import (
+            DocumentAttributeFilename,
+            InputMediaUploadedDocument,
+            InputMediaUploadedPhoto,
+            InputReplyToMessage,
+        )
+
+        peer = await client.get_input_entity(target_id)
+        reply = InputReplyToMessage(reply_to_msg_id=topic_id, top_msg_id=topic_id)
+        if not image_path:
+            await client(SendMessageRequest(peer=peer, message=text, reply_to=reply))
+            return
+
+        path = str(image_path)
+        uploaded = await client.upload_file(path)
+        ext = os.path.splitext(path)[1].lower()
+        if ext in {'.jpg', '.jpeg', '.png'}:
+            media = InputMediaUploadedPhoto(file=uploaded)
+        else:
+            mime = {'.gif': 'image/gif', '.webp': 'image/webp'}.get(ext, 'application/octet-stream')
+            media = InputMediaUploadedDocument(
+                file=uploaded,
+                mime_type=mime,
+                attributes=[DocumentAttributeFilename(os.path.basename(path))],
+            )
+        caption = text if text and len(text) <= self.TELEGRAM_CAPTION_LIMIT else ''
+        await client(SendMediaRequest(peer=peer, media=media, message=caption, reply_to=reply))
+        if text and not caption:
+            await client(SendMessageRequest(peer=peer, message=text, reply_to=reply))
+
+    async def _open_forum_topic_id(self, client, target_id):
+        """挑一个还能发言的话题。优先通用话题，其次任意未关闭话题。"""
+        from datetime import datetime, timezone
+        from telethon.tl.functions.messages import GetForumTopicsRequest
+
+        try:
+            result = await client(GetForumTopicsRequest(
+                peer=target_id,
+                offset_date=datetime.fromtimestamp(0, tz=timezone.utc),
+                offset_id=0,
+                offset_topic=0,
+                limit=50,
+            ))
+        except Exception as error:
+            self.logger.info(f"读取话题列表失败 {target_id}: {error}，改试通用话题")
+            return 1
+
+        usable = []
+        for topic in getattr(result, 'topics', None) or []:
+            if topic.__class__.__name__ != 'ForumTopic':
+                continue
+            if getattr(topic, 'closed', False):
+                continue
+            usable.append(topic)
+
+        general = next((topic for topic in usable if topic.id == 1), None)
+        if general:
+            return general.id
+        if usable:
+            return usable[0].id
+        return None
 
     @staticmethod
     def get_job_account_ids(message_config: Optional[dict]) -> List[str]:
