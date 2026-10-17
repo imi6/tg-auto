@@ -916,11 +916,11 @@
             <div class="gm-grid-3">
                 <div class="gm-field">
                     <label class="gm-label" for="delayMin">最小间隔（秒）</label>
-                    <input class="gm-input" type="number" id="delayMin" value="30" min="5">
+                    <input class="gm-input" type="number" id="delayMin" value="60" min="30">
                 </div>
                 <div class="gm-field">
                     <label class="gm-label" for="delayMax">最大间隔（秒）</label>
-                    <input class="gm-input" type="number" id="delayMax" value="60" min="5">
+                    <input class="gm-input" type="number" id="delayMax" value="120" min="30">
                 </div>
                 <div class="gm-field">
                     <label class="gm-label" for="maxPerAccount">每账号上限</label>
@@ -928,9 +928,9 @@
                 </div>
             </div>
             <div class="gm-hint">
-                同一账号内串行加群并按上述区间随机延迟，多个账号之间并行执行。
-                触发 Telegram 限流时会自动等到结束后继续加后面的群，不会整单中止。
-                间隔过短会显著提高触发风控的概率，建议不低于 30 秒。
+                限流是 Telegram 按账号计算的，程序不能把它关掉。默认每个群隔 60 到 120 秒，多个账号再错开约 15 秒启动，就是为了少触发。
+                一旦被限，会按它要求的时间等完再重试，不管要等多久，这个群和后面的群都会继续加。
+                等完之后，这个号后面的间隔会再拉长一截，减少马上又被限。
             </div>
         </div>
         <div class="gm-modal-footer">

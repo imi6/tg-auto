@@ -381,6 +381,92 @@
         margin-bottom: 8px;
     }
 
+    .detail-list {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .detail-row {
+        display: grid;
+        grid-template-columns: 108px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .detail-row:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+    }
+
+    .detail-label {
+        color: var(--text-secondary);
+        font-size: 13px;
+        line-height: 1.5;
+    }
+
+    .detail-value {
+        color: var(--text-primary);
+        font-size: 14px;
+        line-height: 1.5;
+        min-width: 0;
+        word-break: break-word;
+    }
+
+    .detail-id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .detail-accounts {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .detail-account {
+        padding: 6px 10px;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+    }
+
+    .detail-note {
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+
+    .detail-block {
+        white-space: pre-wrap;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        padding: 10px 12px;
+    }
+
+    .detail-fold {
+        margin-top: 8px;
+    }
+
+    .detail-fold summary {
+        cursor: pointer;
+        color: var(--primary-color);
+    }
+
+    .detail-fold-body {
+        max-height: 180px;
+        overflow-y: auto;
+        margin-top: 8px;
+        padding: 8px 10px;
+        font-size: 12px;
+        line-height: 1.6;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+    }
+
     .template-item {
         align-items: center;
     }
@@ -3342,6 +3428,32 @@
         }
     }
     
+    function detailRow(label, value) {
+        return `<div class="detail-row"><div class="detail-label">${label}</div><div class="detail-value">${value}</div></div>`;
+    }
+
+    function formatDetailAccounts(msg) {
+        const ids = jobAccountIds(msg);
+        if (!ids.length) return '未指定';
+
+        const note = ids.length > 1
+            ? '<div class="detail-note">轮询，每个群本轮只发一次</div>'
+            : '';
+        return `<div class="detail-accounts">${ids.map(id =>
+            `<div class="detail-account">${escapeHtml(accountLabel(id))}</div>`
+        ).join('')}${note}</div>`;
+    }
+
+    function formatDetailTargets(msg) {
+        const targets = getMessageTargets(msg);
+        if (targets.length <= 1) return formatTargets(msg);
+
+        return `${formatTargets(msg)}<details class="detail-fold">
+            <summary>查看全部目标</summary>
+            <div class="detail-fold-body">${targets.map(t => escapeHtml(targetLabel(msg, t))).join('<br>')}</div>
+        </details>`;
+    }
+
     function viewMessageDetails(id) {
         const msg = messages.find(m => (m.job_id || m.id) === id);
         if (!msg) {
@@ -3367,7 +3479,7 @@
             <div style="
                 background: var(--bg-card);
                 border-radius: var(--radius-lg);
-                max-width: 600px;
+                max-width: 680px;
                 width: 90%;
                 max-height: 80vh;
                 overflow: hidden;
@@ -3395,54 +3507,42 @@
                         <i class="bi bi-x-lg"></i>
                     </button>
                 </div>
-                <div style="
+                <div class="detail-list" style="
                     background: var(--bg-secondary);
-                    padding: 16px 24px 24px;
+                    padding: 4px 24px 20px;
                     overflow-y: auto;
                     min-height: 0;
-                    color: var(--text-primary);
-                    font-size: 14px;
-                    line-height: 1.6;
                 ">
-                    <p><strong>任务名称:</strong> ${escapeHtml(msg.name || '定时消息')}</p>
-                    <p><strong>消息ID:</strong> ${msg.job_id || msg.id}</p>
-                    <p><strong>状态:</strong> ${msg.active !== false ? '运行中' : '已暂停'}</p>
-                    <p><strong>下次发送:</strong> ${msg.active === false ? '已暂停' : (msg.next_run_at ? escapeHtml(String(msg.next_run_at).replace('T', ' ')) : '未挂上调度器')}</p>
-                    <p><strong>账号:</strong> ${jobAccountIds(msg).map(id => escapeHtml(accountLabel(id))).join('、') || '未指定'}
-                        ${jobAccountIds(msg).length > 1 ? '（轮询，每个群本轮只发一次）' : ''}</p>
-                    <p><strong>目标频道/群组:</strong> ${formatTargets(msg)}</p>
-                    ${(msg.excluded_targets || []).length ? `
-                        <details style="margin: -8px 0 12px 0;">
-                            <summary style="cursor: pointer; color: var(--text-muted);">已剔除 ${(msg.excluded_targets || []).length} 个发不出去的目标</summary>
-                            <div style="max-height: 160px; overflow-y: auto; font-size: 12px; padding: 6px 0;">
-                                ${(msg.excluded_targets || []).map(item =>
-                                    formatTargetItem(item)
-                                ).join('<br>')}
+                    ${detailRow('任务名称', escapeHtml(msg.name || '定时消息'))}
+                    ${detailRow('消息ID', `<span class="detail-id">${escapeHtml(msg.job_id || msg.id || '')}</span>`)}
+                    ${detailRow('状态', msg.active !== false ? '运行中' : '已暂停')}
+                    ${detailRow('下次发送', msg.active === false ? '已暂停' : (msg.next_run_at ? escapeHtml(String(msg.next_run_at).replace('T', ' ')) : '未挂上调度器'))}
+                    ${detailRow('账号', formatDetailAccounts(msg))}
+                    ${detailRow('目标频道/群组', formatDetailTargets(msg))}
+                    ${(msg.excluded_targets || []).length ? detailRow('已剔除', `
+                        <details class="detail-fold">
+                            <summary>${(msg.excluded_targets || []).length} 个发不出去的目标</summary>
+                            <div class="detail-fold-body">
+                                ${(msg.excluded_targets || []).map(item => formatTargetItem(item)).join('<br>')}
                             </div>
                         </details>
-                    ` : ''}
-                    ${getMessageTargets(msg).length > 1 ? `
-                        <details style="margin: -8px 0 12px 0;">
-                            <summary style="cursor: pointer; color: var(--primary-color);">查看全部目标</summary>
-                            <div style="max-height: 160px; overflow-y: auto; font-size: 12px; padding: 6px 0;">
-                                ${getMessageTargets(msg).map(t => escapeHtml(targetLabel(msg, t))).join('<br>')}
-                            </div>
-                        </details>
-                        <p><strong>目标间隔:</strong> ${msg.send_interval ?? 5} 秒</p>
-                    ` : ''}
-                    <p><strong>换号额外间隔:</strong> ${msg.account_stagger ?? 0} 秒</p>
-                    <p><strong>与其他任务错开:</strong> ${msg.job_stagger ?? 30} 秒</p>
-                    <p><strong>调度表达式:</strong> ${msg.schedule || '未设置'}</p>
-                    <p><strong>消息类型:</strong> ${msg.use_ai ? 'AI生成' : '固定文本'}</p>
-                    ${msg.use_ai ? `<p><strong>AI提示词:</strong> ${msg.ai_prompt || '无'}</p>` : `<p><strong>消息内容:</strong> ${msg.message || '无'}</p>`}
-                    ${msg.image ? `<p><strong>配图:</strong><br><img class="message-thumb" src="${mediaUrl(msg.image)}" alt=""></p>` : ''}
-                    <p><strong>随机延时:</strong> ${msg.random_delay || 0} 秒</p>
-                    <p><strong>发送后删除:</strong> ${msg.delete_after_send ? '是' : '否'}</p>
-                    <p><strong>最大执行次数:</strong> ${msg.max_executions || '无限制'}</p>
-                    <p><strong>已执行次数:</strong> ${msg.execution_count || 0}</p>
-                    <p><strong>上次发送:</strong> ${msg.last_run_at
-                        ? `${RECORD_LABEL[msg.last_status] || msg.last_status || ''} ${String(msg.last_run_at).replace('T', ' ')}${msg.last_error ? `（${escapeHtml(msg.last_error)}）` : ''}`
-                        : '尚未执行'}</p>
+                    `) : ''}
+                    ${getMessageTargets(msg).length > 1 ? detailRow('目标间隔', `${msg.send_interval ?? 5} 秒`) : ''}
+                    ${detailRow('换号额外间隔', `${msg.account_stagger ?? 0} 秒`)}
+                    ${detailRow('与其他任务错开', `${msg.job_stagger ?? 30} 秒`)}
+                    ${detailRow('调度表达式', escapeHtml(msg.schedule || '未设置'))}
+                    ${detailRow('消息类型', msg.use_ai ? 'AI生成' : '固定文本')}
+                    ${msg.use_ai
+                        ? detailRow('AI提示词', `<div class="detail-block">${escapeHtml(msg.ai_prompt || '无')}</div>`)
+                        : detailRow('消息内容', `<div class="detail-block">${escapeHtml(msg.message || '无')}</div>`)}
+                    ${msg.image ? detailRow('配图', `<img class="message-thumb" src="${mediaUrl(msg.image)}" alt="">`) : ''}
+                    ${detailRow('随机延时', `${msg.random_delay || 0} 秒`)}
+                    ${detailRow('发送后删除', msg.delete_after_send ? '是' : '否')}
+                    ${detailRow('最大执行次数', escapeHtml(String(msg.max_executions || '无限制')))}
+                    ${detailRow('已执行次数', String(msg.execution_count || 0))}
+                    ${detailRow('上次发送', msg.last_run_at
+                        ? `${escapeHtml(RECORD_LABEL[msg.last_status] || msg.last_status || '')} ${escapeHtml(String(msg.last_run_at).replace('T', ' '))}${msg.last_error ? `（${escapeHtml(msg.last_error)}）` : ''}`
+                        : '尚未执行')}
                 </div>
             </div>
         `;

@@ -15,6 +15,15 @@ class JoinTaskManager(BatchTaskManager, metaclass=Singleton):
 
     task_type = 'join'
     task_label = '批量入群任务'
+    # 入群按这个节奏不容易撞上 Telegram 的频率限制；限流后仍会等完再继续
+    min_delay = 30
+    account_start_stagger = 15
+    default_options = {
+        'delay_min': 60,
+        'delay_max': 120,
+        'max_per_account': 20,
+        'max_flood_wait': 600,
+    }
 
     def __init__(self):
         super().__init__("data/join_tasks.json")

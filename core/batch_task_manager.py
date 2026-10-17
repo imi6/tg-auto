@@ -51,6 +51,8 @@ class BatchTaskManager:
 
     # 账号内两次操作的最小间隔，子类可按操作的风控强度调整
     min_delay = 5
+    # 多账号同时动手容易在同一出口上叠出限流，子类可错开每个账号的启动
+    account_start_stagger = 0
     max_history_tasks = 50
 
     def __init__(self, tasks_file: str):
@@ -273,6 +275,12 @@ class BatchTaskManager:
             'updated_tasks': updated_tasks,
         }
 
+    def _note_flood(self, state: Dict[str, Any], wait_seconds: int) -> None:
+        """记下这次限流，并把该账号后面的间隔拉长。剩余目标仍会继续加入。"""
+        state['flood_hits'] = int(state.get('flood_hits') or 0) + 1
+        extra = int(state.get('pace_extra') or 0) + max(60, min(120, wait_seconds // 2))
+        state['pace_extra'] = min(180, extra)
+
     def _account_present(self, task_id: str, account_id: str) -> bool:
         task = self.tasks.get(task_id)
         return bool(task and account_id in (task.get('accounts') or {}))
@@ -304,8 +312,12 @@ class BatchTaskManager:
 
         try:
             await self._notify(task)
+            account_ids = list(task['accounts'].keys())
             await asyncio.gather(
-                *[self._run_account(task_id, account_id) for account_id in list(task['accounts'].keys())],
+                *[
+                    self._run_account_slot(task_id, account_id, index)
+                    for index, account_id in enumerate(account_ids)
+                ],
                 return_exceptions=True
             )
         except Exception as e:
@@ -327,6 +339,12 @@ class BatchTaskManager:
                 + ", ".join(f"{status} {summary[status]}" for status in SUMMARY_STATUSES)
             )
             await self._notify(task)
+
+    async def _run_account_slot(self, task_id: str, account_id: str, index: int):
+        stagger = index * self.account_start_stagger
+        if stagger and not await self._sleep_cancellable(task_id, stagger, account_id):
+            return
+        await self._run_account(task_id, account_id)
 
     async def _run_account(self, task_id: str, account_id: str):
         task = self.tasks.get(task_id)
@@ -359,8 +377,11 @@ class BatchTaskManager:
 
             label = self.describe_item(item)
 
-            if index > 0 and options['delay_max'] > 0:
-                delay = random.randint(options['delay_min'], options['delay_max'])
+            extra = int(state.get('pace_extra') or 0)
+            if index > 0 and (options['delay_max'] > 0 or extra):
+                delay = extra
+                if options['delay_max'] > 0:
+                    delay += random.randint(options['delay_min'], options['delay_max'])
                 state['current'] = {'target': label, 'waiting_seconds': delay}
                 await self._notify(task, persist=False)
                 if not await self._sleep_cancellable(task_id, delay, account_id):
@@ -398,8 +419,8 @@ class BatchTaskManager:
     ) -> Optional[Dict[str, Any]]:
         """执行单条操作并处理限流。
 
-        触发 FloodWait 时等待结束后重试当前目标，可多次等待。
-        返回 None 只表示任务被取消，限流本身不会中止账号剩余目标。
+        限流时按 Telegram 要求的时间等完再重试当前目标，等到能加为止。
+        同时拉长该账号后面的间隔。返回 None 只表示任务被取消。
         """
         task = self.tasks.get(task_id)
         if not task or account_id not in (task.get('accounts') or {}):
@@ -429,11 +450,7 @@ class BatchTaskManager:
                 wait_seconds = 30
 
             flood_rounds += 1
-            if flood_rounds > 8:
-                return {
-                    'status': STATUS_FAILED,
-                    'message': f'同一目标连续限流 {flood_rounds - 1} 次，已跳过，继续后续加群'
-                }
+            self._note_flood(state, wait_seconds)
 
             self.logger.warning(
                 f"账号 {account_id} 触发限流，等待 {wait_seconds} 秒后重试 {label}"
@@ -442,8 +459,9 @@ class BatchTaskManager:
             state['current'] = {'target': label, 'waiting_seconds': wait_seconds, 'flood': True}
             await self._notify(task)
 
-            # Telegram 的 seconds 是最短等待，多留 2 秒再动手，减少刚等到又被限
-            if not await self._sleep_cancellable(task_id, wait_seconds + 2, account_id):
+            # Telegram 给的是最短等待，再多留一截，避免刚恢复又打到同一条限制上
+            buffer = max(8, wait_seconds // 10)
+            if not await self._sleep_cancellable(task_id, wait_seconds + buffer, account_id):
                 if not self._account_present(task_id, account_id):
                     return None
                 state['status'] = ACCOUNT_CANCELLED

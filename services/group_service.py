@@ -13,7 +13,6 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
-from telethon.tl.types import ChatInviteAlready, ChatInvitePeek
 
 from models.task import (
     STATUS_ALREADY,
@@ -312,26 +311,7 @@ class GroupService:
             return {'status': STATUS_FAILED, 'message': str(e) or e.__class__.__name__}
 
     async def _join_by_invite(self, client, invite_hash: str) -> Dict[str, Any]:
-        try:
-            info = await client(CheckChatInviteRequest(invite_hash))
-            if isinstance(info, (ChatInviteAlready, ChatInvitePeek)):
-                chat = info.chat
-                return {
-                    'status': STATUS_ALREADY,
-                    'message': '已在群内',
-                    'chat_id': tg_utils.get_peer_id(chat),
-                    'title': getattr(chat, 'title', '')
-                }
-            if getattr(info, 'request_needed', False):
-                await client(ImportChatInviteRequest(invite_hash))
-                return {'status': STATUS_PENDING, 'message': '已发送加入申请，等待管理员批准'}
-        except FloodWaitError:
-            raise
-        except (InviteHashExpiredError, InviteHashInvalidError):
-            raise
-        except Exception as e:
-            self.logger.debug(f"检查邀请链接 {invite_hash} 失败: {e}")
-
+        # 先查再加会多打一次接口，入群本身就容易限流，这里直接加入
         updates = await client(ImportChatInviteRequest(invite_hash))
         chat = self._chat_from_updates(updates)
         return {
