@@ -1018,6 +1018,7 @@ class WebApp:
                     user_id = getattr(account, 'own_user_id', None) or getattr(account, 'user_id', None)
                     name = None
                     username = None
+                    has_photo = False
                     if account.client and is_valid:
                         try:
                             me = await account.client.get_me()
@@ -1026,6 +1027,7 @@ class WebApp:
                                 last_name = getattr(me, 'last_name', '') or ''
                                 name = f"{first_name} {last_name}".strip() if first_name or last_name else None
                                 username = getattr(me, 'username', None) or None
+                                has_photo = bool(getattr(me, 'photo', None))
                         except Exception:
                             pass
                     
@@ -1046,6 +1048,7 @@ class WebApp:
                         "name": name,
                         "username": username,
                         "user_id": user_id,
+                        "has_photo": has_photo,
                         "monitor_active": getattr(account, 'monitor_active', False),
                         "monitor_count": monitor_count,
                         "status": status,
@@ -2271,11 +2274,11 @@ class WebApp:
             if not client:
                 raise HTTPException(status_code=404, detail="账号未登录")
 
-            data = await self.profile_service.download_profile_photo(client)
+            data = await self.profile_service.download_profile_photo(client, account_id)
             if not data:
-                raise HTTPException(status_code=404, detail="当前没有头像")
+                return Response(status_code=404, headers={"Cache-Control": "no-store"})
 
-            return Response(content=data, media_type="image/jpeg")
+            return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
         @self.app.post("/api/accounts/{account_id}/profile/photo")
         async def update_account_profile_photo(request: Request, account_id: str, file: UploadFile = File(...)):
@@ -2298,6 +2301,7 @@ class WebApp:
             if result['status'] != STATUS_SUCCESS:
                 return {"success": False, "message": result['message']}
 
+            self.profile_service.remember_profile_photo(account_id, prepared['data'])
             self.logger.info(f"账号 {account_id} 头像已更新")
             return {"success": True, "message": result['message']}
 
@@ -2313,6 +2317,7 @@ class WebApp:
             if result['status'] != STATUS_SUCCESS:
                 return {"success": False, "message": result['message']}
 
+            self.profile_service.remember_profile_photo(account_id, None)
             self.logger.info(f"账号 {account_id} 头像已删除")
             return {"success": True, "message": result['message']}
         

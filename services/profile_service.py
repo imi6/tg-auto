@@ -67,6 +67,7 @@ class ProfileService:
     def __init__(self):
         self.logger = get_logger(__name__)
         self._about_limits: Optional[Dict[str, int]] = None
+        self._photo_cache: Dict[str, Optional[bytes]] = {}
 
     # ------------------------------------------------------------------ 服务端限制
 
@@ -339,18 +340,28 @@ class ProfileService:
 
     # ------------------------------------------------------------------ 头像
 
-    async def download_profile_photo(self, client) -> Optional[bytes]:
+    def remember_profile_photo(self, account_id: str, data: Optional[bytes]) -> None:
+        """记下这个账号当前头像，账号列表不用每次都向 Telegram 再要一次。"""
+        if account_id:
+            self._photo_cache[account_id] = data or None
+
+    async def download_profile_photo(self, client, account_id: str = '') -> Optional[bytes]:
         """下载当前头像。没有头像时返回 None。"""
+        if account_id and account_id in self._photo_cache:
+            return self._photo_cache[account_id]
+
+        data = None
         try:
             buffer = io.BytesIO()
-            downloaded = await client.download_profile_photo('me', file=buffer)
-            if not downloaded:
-                return None
-            data = buffer.getvalue()
-            return data or None
+            downloaded = await client.download_profile_photo('me', file=buffer, download_big=False)
+            if downloaded:
+                data = buffer.getvalue() or None
         except Exception as e:
             self.logger.debug(f"下载头像失败: {e}")
-            return None
+
+        if account_id:
+            self._photo_cache[account_id] = data
+        return data
 
     def prepare_photo(self, data: bytes, content_type: str, filename: str = '') -> Dict[str, Any]:
         """校验上传的头像，通过时返回可交给 Telegram 的文件名。"""
