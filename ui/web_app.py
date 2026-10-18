@@ -17,7 +17,7 @@ from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Request, Form, HTT
                      Cookie, UploadFile, File)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
 
@@ -274,6 +274,22 @@ class WebApp:
     async def _on_send_progress(self, progress: Dict[str, Any]):
         await self.broadcast_message({"type": "send_progress", "data": progress})
     
+    async def _read_template_photo(self, file: Optional[UploadFile]):
+        """读取模板头像。没选文件时返回空，格式不对时返回错误说明。"""
+        if file is None or not (file.filename or '').strip():
+            return None, '', None
+
+        content = await file.read()
+        if not content:
+            return None, '', None
+
+        prepared = self.profile_service.prepare_photo(
+            content, file.content_type or '', file.filename or ''
+        )
+        if not prepared.get('ok'):
+            return None, '', prepared.get('message') or '头像无效'
+        return prepared['data'], prepared.get('ext') or '.jpg', None
+
     async def get_connected_client(self, account_id: str):
         """获取账号可用的客户端，账号不存在时抛 404，未登录或连接失败时返回 None"""
         account = self.account_manager.get_account(account_id)
@@ -2246,6 +2262,59 @@ class WebApp:
             except Exception as e:
                 self.logger.error(f"读取账号 {account_id} 资料失败: {e}")
                 return {"success": False, "message": str(e)}
+
+        @self.app.get("/api/accounts/{account_id}/profile/photo")
+        async def get_account_profile_photo(request: Request, account_id: str):
+            user = self.get_current_user(request)
+
+            client = await self.get_connected_client(account_id)
+            if not client:
+                raise HTTPException(status_code=404, detail="账号未登录")
+
+            data = await self.profile_service.download_profile_photo(client)
+            if not data:
+                raise HTTPException(status_code=404, detail="当前没有头像")
+
+            return Response(content=data, media_type="image/jpeg")
+
+        @self.app.post("/api/accounts/{account_id}/profile/photo")
+        async def update_account_profile_photo(request: Request, account_id: str, file: UploadFile = File(...)):
+            user = self.get_current_user(request)
+
+            client = await self.get_connected_client(account_id)
+            if not client:
+                return {"success": False, "message": "账号未登录，无法修改头像"}
+
+            content = await file.read()
+            prepared = self.profile_service.prepare_photo(
+                content, file.content_type or '', file.filename or ''
+            )
+            if not prepared.get('ok'):
+                return {"success": False, "message": prepared['message']}
+
+            result = await self.profile_service.set_profile_photo(
+                client, prepared['data'], prepared['filename']
+            )
+            if result['status'] != STATUS_SUCCESS:
+                return {"success": False, "message": result['message']}
+
+            self.logger.info(f"账号 {account_id} 头像已更新")
+            return {"success": True, "message": result['message']}
+
+        @self.app.delete("/api/accounts/{account_id}/profile/photo")
+        async def delete_account_profile_photo(request: Request, account_id: str):
+            user = self.get_current_user(request)
+
+            client = await self.get_connected_client(account_id)
+            if not client:
+                return {"success": False, "message": "账号未登录，无法删除头像"}
+
+            result = await self.profile_service.delete_profile_photo(client)
+            if result['status'] != STATUS_SUCCESS:
+                return {"success": False, "message": result['message']}
+
+            self.logger.info(f"账号 {account_id} 头像已删除")
+            return {"success": True, "message": result['message']}
         
         @self.app.put("/api/accounts/{account_id}/profile")
         async def update_account_profile(request: Request, account_id: str, profile_request: ProfileUpdateRequest):
@@ -2494,40 +2563,90 @@ class WebApp:
             return {"success": True, "templates": templates, "total": len(templates)}
 
         @self.app.post("/api/profile-templates")
-        async def create_profile_template(request: Request, template_request: ProfileTemplateRequest):
+        async def create_profile_template(
+            request: Request,
+            title: str = Form(""),
+            first_name: str = Form(""),
+            last_name: str = Form(""),
+            about: str = Form(""),
+            clear_last_name: bool = Form(False),
+            clear_about: bool = Form(False),
+            clear_photo: bool = Form(False),
+            file: Optional[UploadFile] = File(None),
+        ):
             user = self.get_current_user(request)
+            photo_bytes, photo_ext, error = await self._read_template_photo(file)
+            if error:
+                raise HTTPException(status_code=400, detail=error)
             try:
                 template = self.profile_templates.add(
-                    title=template_request.title,
-                    first_name=template_request.first_name,
-                    last_name=template_request.last_name,
-                    about=template_request.about,
-                    clear_last_name=template_request.clear_last_name,
-                    clear_about=template_request.clear_about,
+                    title=title,
+                    first_name=first_name,
+                    last_name=last_name,
+                    about=about,
+                    clear_last_name=clear_last_name,
+                    clear_about=clear_about,
+                    clear_photo=clear_photo,
+                    photo_bytes=photo_bytes,
+                    photo_ext=photo_ext,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             return {"success": True, "template": template, "message": "资料模板已保存"}
 
         @self.app.put("/api/profile-templates/{template_id}")
-        async def update_profile_template(request: Request, template_id: str,
-                                          template_request: ProfileTemplateRequest):
+        async def update_profile_template(
+            request: Request,
+            template_id: str,
+            title: str = Form(""),
+            first_name: str = Form(""),
+            last_name: str = Form(""),
+            about: str = Form(""),
+            clear_last_name: bool = Form(False),
+            clear_about: bool = Form(False),
+            clear_photo: bool = Form(False),
+            file: Optional[UploadFile] = File(None),
+        ):
             user = self.get_current_user(request)
+            photo_bytes, photo_ext, error = await self._read_template_photo(file)
+            if error:
+                raise HTTPException(status_code=400, detail=error)
             try:
                 template = self.profile_templates.update(
                     template_id,
-                    title=template_request.title,
-                    first_name=template_request.first_name,
-                    last_name=template_request.last_name,
-                    about=template_request.about,
-                    clear_last_name=template_request.clear_last_name,
-                    clear_about=template_request.clear_about,
+                    title=title,
+                    first_name=first_name,
+                    last_name=last_name,
+                    about=about,
+                    clear_last_name=clear_last_name,
+                    clear_about=clear_about,
+                    clear_photo=clear_photo,
+                    photo_bytes=photo_bytes,
+                    photo_ext=photo_ext,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             if not template:
                 raise HTTPException(status_code=404, detail="资料模板不存在")
             return {"success": True, "template": template, "message": "资料模板已更新"}
+
+        @self.app.get("/api/profile-templates/{template_id}/photo")
+        async def get_profile_template_photo(request: Request, template_id: str):
+            user = self.get_current_user(request)
+            template = self.profile_templates.get(template_id)
+            if not template:
+                raise HTTPException(status_code=404, detail="资料模板不存在")
+            data = self.profile_templates.read_photo(template.get('photo') or '')
+            if not data:
+                raise HTTPException(status_code=404, detail="模板没有头像")
+            name = template.get('photo') or ''
+            if name.endswith('.png'):
+                media_type = 'image/png'
+            elif name.endswith('.webp'):
+                media_type = 'image/webp'
+            else:
+                media_type = 'image/jpeg'
+            return Response(content=data, media_type=media_type)
 
         @self.app.delete("/api/profile-templates/{template_id}")
         async def delete_profile_template(request: Request, template_id: str):
@@ -2555,20 +2674,28 @@ class WebApp:
 
             try:
                 fields = self.profile_templates.to_profile_fields(template)
-            except ValueError as e:
-                return {"success": False, "message": str(e)}
+            except ValueError:
+                fields = {'first_name': None, 'last_name': None, 'about': None}
 
-            error = self.profile_service.validate_profile_fields(
-                fields['first_name'], fields['last_name'], fields['about']
-            )
-            if error:
-                return {"success": False, "message": error}
+            photo = (template.get('photo') or '').strip()
+            clear_photo = bool(template.get('clear_photo')) and not photo
+            if all(value is None for value in fields.values()) and not photo and not clear_photo:
+                return {"success": False, "message": "模板没有可应用的字段"}
+
+            if any(value is not None for value in fields.values()):
+                error = self.profile_service.validate_profile_fields(
+                    fields['first_name'], fields['last_name'], fields['about']
+                )
+                if error:
+                    return {"success": False, "message": error}
 
             task = self.profile_task_manager.create_task(
                 account_ids=apply_request.account_ids,
                 first_name=fields['first_name'],
                 last_name=fields['last_name'],
-                about=fields['about']
+                about=fields['about'],
+                photo=photo,
+                clear_photo=clear_photo,
             )
             self.profile_templates.mark_used(template_id)
             return {

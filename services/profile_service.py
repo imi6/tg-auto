@@ -3,6 +3,7 @@
 提供个人资料（用户名、名字、简介）的读取、校验与修改能力
 """
 
+import io
 import re
 from typing import Any, Dict, Optional
 
@@ -14,7 +15,9 @@ from telethon.tl.functions.account import (
     UpdateUsernameRequest,
 )
 from telethon.tl.functions.help import GetAppConfigRequest
+from telethon.tl.functions.photos import DeletePhotosRequest, UploadProfilePhotoRequest
 from telethon.tl.functions.users import GetFullUserRequest
+from telethon.tl.types import InputPhoto
 
 from models.task import STATUS_FAILED, STATUS_FLOOD, STATUS_SUCCESS
 from utils.logger import get_logger
@@ -34,6 +37,18 @@ UsernameNotModifiedError = _error('UsernameNotModifiedError')
 UsernamePurchaseAvailableError = _error('UsernamePurchaseAvailableError')
 AboutTooLongError = _error('AboutTooLongError')
 FirstNameInvalidError = _error('FirstnameInvalidError')
+PhotoExtInvalidError = _error('PhotoExtInvalidError')
+PhotoInvalidDimensionsError = _error('PhotoInvalidDimensionsError')
+ImageProcessFailedError = _error('ImageProcessFailedError')
+
+PHOTO_MAX_BYTES = 5 * 1024 * 1024
+_PHOTO_EXT = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/pjpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+}
 
 # Telegram 侧的字段长度限制。简介上限由服务端 appConfig 下发，这里的常量只作为拉取失败时的兜底
 FIRST_NAME_MAX = 64
@@ -319,5 +334,88 @@ class ProfileService:
             return {'status': STATUS_FAILED, 'message': '用户名格式无效'}
         except UsernamePurchaseAvailableError:
             return {'status': STATUS_FAILED, 'message': '该用户名需要通过 Fragment 购买'}
+        except Exception as e:
+            return {'status': STATUS_FAILED, 'message': str(e) or e.__class__.__name__}
+
+    # ------------------------------------------------------------------ 头像
+
+    async def download_profile_photo(self, client) -> Optional[bytes]:
+        """下载当前头像。没有头像时返回 None。"""
+        try:
+            buffer = io.BytesIO()
+            downloaded = await client.download_profile_photo('me', file=buffer)
+            if not downloaded:
+                return None
+            data = buffer.getvalue()
+            return data or None
+        except Exception as e:
+            self.logger.debug(f"下载头像失败: {e}")
+            return None
+
+    def prepare_photo(self, data: bytes, content_type: str, filename: str = '') -> Dict[str, Any]:
+        """校验上传的头像，通过时返回可交给 Telegram 的文件名。"""
+        if not data:
+            return {'ok': False, 'message': '没有选择头像文件'}
+        if len(data) > PHOTO_MAX_BYTES:
+            return {'ok': False, 'message': '头像不能超过 5MB'}
+
+        ext = _PHOTO_EXT.get((content_type or '').split(';', 1)[0].strip().lower())
+        if not ext:
+            name = (filename or '').lower()
+            if name.endswith('.jpeg') or name.endswith('.jpg'):
+                ext = '.jpg'
+            elif name.endswith('.png'):
+                ext = '.png'
+            elif name.endswith('.webp'):
+                ext = '.webp'
+        if not ext:
+            return {'ok': False, 'message': '头像只支持 JPG、PNG、WEBP'}
+
+        return {'ok': True, 'filename': f'avatar{ext}', 'ext': ext, 'data': data}
+
+    async def set_profile_photo(self, client, data: bytes, filename: str) -> Dict[str, Any]:
+        """用上传的图片替换当前头像。"""
+        upload = io.BytesIO(data)
+        upload.name = filename
+
+        try:
+            uploaded = await client.upload_file(upload)
+            await client(UploadProfilePhotoRequest(file=uploaded))
+            return {'status': STATUS_SUCCESS, 'message': '头像已更新'}
+        except FloodWaitError as e:
+            seconds = int(getattr(e, 'seconds', 0) or 0)
+            return {
+                'status': STATUS_FLOOD,
+                'wait_seconds': seconds,
+                'message': f"修改头像过于频繁，需等待 {seconds} 秒"
+            }
+        except (PhotoExtInvalidError, PhotoInvalidDimensionsError, ImageProcessFailedError):
+            return {'status': STATUS_FAILED, 'message': '图片无法作为头像，请换一张 JPG 或 PNG'}
+        except Exception as e:
+            return {'status': STATUS_FAILED, 'message': str(e) or e.__class__.__name__}
+
+    async def delete_profile_photo(self, client) -> Dict[str, Any]:
+        """删除这个账号的全部历史头像。"""
+        try:
+            photos = await client.get_profile_photos('me')
+            if not photos:
+                return {'status': STATUS_SUCCESS, 'message': '当前没有头像'}
+
+            await client(DeletePhotosRequest([
+                InputPhoto(
+                    id=photo.id,
+                    access_hash=photo.access_hash,
+                    file_reference=photo.file_reference
+                )
+                for photo in photos
+            ]))
+            return {'status': STATUS_SUCCESS, 'message': '头像已删除'}
+        except FloodWaitError as e:
+            seconds = int(getattr(e, 'seconds', 0) or 0)
+            return {
+                'status': STATUS_FLOOD,
+                'wait_seconds': seconds,
+                'message': f"删除头像过于频繁，需等待 {seconds} 秒"
+            }
         except Exception as e:
             return {'status': STATUS_FAILED, 'message': str(e) or e.__class__.__name__}

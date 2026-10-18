@@ -409,6 +409,42 @@
         border-radius: var(--radius-full);
         object-fit: cover;
     }
+
+    .profile-photo-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+
+    .profile-photo-preview,
+    .profile-photo-fallback {
+        width: 72px;
+        height: 72px;
+        border-radius: var(--radius-full);
+        flex-shrink: 0;
+    }
+
+    .profile-photo-preview {
+        object-fit: cover;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+    }
+
+    .profile-photo-fallback {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: var(--primary-gradient);
+        color: white;
+        font-size: 22px;
+    }
+
+    .profile-photo-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+    }
     
     .account-status-dot {
         position: absolute;
@@ -983,6 +1019,23 @@
                     </label>
                     <textarea class="form-input" id="tpl-about" rows="3" maxlength="140" placeholder="留空表示套用时不改简介"></textarea>
                 </div>
+                <div class="form-group">
+                    <label class="form-label">头像</label>
+                    <div class="profile-photo-row">
+                        <img id="tplPhotoPreview" class="profile-photo-preview" alt="" style="display: none;">
+                        <div id="tplPhotoFallback" class="profile-photo-fallback" style="display: flex;">
+                            <i class="bi bi-person"></i>
+                        </div>
+                        <div class="profile-photo-actions">
+                            <input type="file" id="tpl-photo" accept="image/jpeg,image/png,image/webp" onchange="onTplPhotoSelected()">
+                            <label class="form-help" style="display: flex; align-items: center; gap: 6px; margin: 0;">
+                                <input type="checkbox" id="tpl-clear-photo" onchange="onTplPhotoClearToggle()">
+                                套用时删除账号头像
+                            </label>
+                            <small class="form-help">不选图片且不勾选，套用时不改头像。JPG、PNG、WEBP，不超过 5MB。</small>
+                        </div>
+                    </div>
+                </div>
                 <div class="template-editor-actions">
                     <button type="button" class="btn btn-primary btn-sm" onclick="submitProfileTemplate()">保存模板</button>
                     <button type="button" class="btn btn-secondary btn-sm" onclick="resetProfileTemplateEditor()">取消编辑</button>
@@ -1252,11 +1305,36 @@
 
             <form id="profileForm" style="display: none;">
                 <div class="form-group">
+                    <label class="form-label">头像</label>
+                    <div class="profile-photo-row">
+                        <img id="profilePhotoPreview" class="profile-photo-preview" alt="" style="display: none;">
+                        <div id="profilePhotoFallback" class="profile-photo-fallback">
+                            <i class="bi bi-person"></i>
+                        </div>
+                        <div class="profile-photo-actions">
+                            <input type="file" id="profilePhotoFile" accept="image/jpeg,image/png,image/webp"
+                                   onchange="onProfilePhotoSelected()">
+                            <label class="form-help" style="display: flex; align-items: center; gap: 6px; margin: 0;">
+                                <input type="checkbox" id="profilePhotoRemove" onchange="onProfilePhotoRemoveToggle()">
+                                删除当前头像
+                            </label>
+                            <small class="form-help">支持 JPG、PNG、WEBP，不超过 5MB。上传新图会替换当前头像。</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">用户ID</label>
+                    <input type="text" class="form-input" id="profileUserId" readonly>
+                    <small class="form-help">这是 Telegram 分配的数字 ID，不能修改。别人能搜到的是下面的用户名。</small>
+                </div>
+
+                <div class="form-group">
                     <label class="form-label">从资料模板填入</label>
                     <select id="single-template-picker" class="form-select" onchange="fillSingleFromTemplate()">
                         <option value="">不使用模板</option>
                     </select>
-                    <small class="form-help">只会填入名字、姓氏和简介，用户名需单独改</small>
+                    <small class="form-help">会填入名字、姓氏、简介和头像。用户名需单独改。</small>
                 </div>
 
                 <div class="form-group">
@@ -2177,6 +2255,7 @@
         document.getElementById('profileForm').style.display = 'none';
         document.getElementById('usernameHint').textContent = '5-32 个字符，字母开头，只能含字母、数字和下划线';
         document.getElementById('usernameHint').style.color = 'var(--text-muted)';
+        resetProfilePhoto();
 
         try {
             const response = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/profile`);
@@ -2189,7 +2268,9 @@
             }
 
             originalProfile = data.profile;
+            document.getElementById('profileUserId').value = data.profile.user_id || '';
             document.getElementById('profileUsername').value = data.profile.username || '';
+            loadProfilePhoto(accountId);
             document.getElementById('profileFirstName').value = data.profile.first_name || '';
             document.getElementById('profileLastName').value = data.profile.last_name || '';
             document.getElementById('profileAbout').value = data.profile.about || '';
@@ -2273,6 +2354,63 @@
         }
     }
 
+    function resetProfilePhoto() {
+        const file = document.getElementById('profilePhotoFile');
+        const remove = document.getElementById('profilePhotoRemove');
+        const preview = document.getElementById('profilePhotoPreview');
+        const fallback = document.getElementById('profilePhotoFallback');
+        if (file) file.value = '';
+        if (remove) remove.checked = false;
+        if (preview) {
+            preview.removeAttribute('src');
+            preview.style.display = 'none';
+        }
+        if (fallback) fallback.style.display = 'flex';
+    }
+
+    function loadProfilePhoto(accountId) {
+        const preview = document.getElementById('profilePhotoPreview');
+        const fallback = document.getElementById('profilePhotoFallback');
+        preview.onload = function () {
+            preview.style.display = 'block';
+            fallback.style.display = 'none';
+        };
+        preview.onerror = function () {
+            preview.style.display = 'none';
+            fallback.style.display = 'flex';
+        };
+        preview.src = `/api/accounts/${encodeURIComponent(accountId)}/profile/photo?t=${Date.now()}`;
+    }
+
+    function onProfilePhotoSelected() {
+        const file = document.getElementById('profilePhotoFile').files[0];
+        const remove = document.getElementById('profilePhotoRemove');
+        if (!file) return;
+        remove.checked = false;
+        const preview = document.getElementById('profilePhotoPreview');
+        const fallback = document.getElementById('profilePhotoFallback');
+        const reader = new FileReader();
+        reader.onload = function () {
+            preview.src = reader.result;
+            preview.style.display = 'block';
+            fallback.style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function onProfilePhotoRemoveToggle() {
+        const remove = document.getElementById('profilePhotoRemove');
+        if (!remove.checked) {
+            if (currentProfileAccountId) loadProfilePhoto(currentProfileAccountId);
+            return;
+        }
+        document.getElementById('profilePhotoFile').value = '';
+        const preview = document.getElementById('profilePhotoPreview');
+        preview.removeAttribute('src');
+        preview.style.display = 'none';
+        document.getElementById('profilePhotoFallback').style.display = 'flex';
+    }
+
     async function submitProfile() {
         if (!currentProfileAccountId || !originalProfile) return;
 
@@ -2288,7 +2426,10 @@
         if (lastName !== (originalProfile.last_name || '')) payload.last_name = lastName;
         if (about !== (originalProfile.about || '')) payload.about = about;
 
-        if (Object.keys(payload).length === 0) {
+        const photoFile = document.getElementById('profilePhotoFile').files[0];
+        const removePhoto = document.getElementById('profilePhotoRemove').checked;
+
+        if (Object.keys(payload).length === 0 && !photoFile && !removePhoto) {
             showNotification('资料没有任何修改', 'warning');
             return;
         }
@@ -2310,24 +2451,51 @@
         button.innerHTML = '<i class="bi bi-hourglass-split"></i> 保存中...';
 
         try {
-            const response = await fetch(`/api/accounts/${encodeURIComponent(currentProfileAccountId)}/profile`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const data = await response.json();
+            const messages = [];
 
-            if (data.profile) {
-                originalProfile = data.profile;
+            if (Object.keys(payload).length) {
+                const response = await fetch(`/api/accounts/${encodeURIComponent(currentProfileAccountId)}/profile`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                if (data.profile) originalProfile = data.profile;
+                if (!data.success) {
+                    showNotification(data.message || '资料修改失败', 'error');
+                    return;
+                }
+                messages.push(data.message || '资料已更新');
             }
 
-            if (data.success) {
-                showNotification(data.message || '资料已更新', 'success');
-                hideProfileModal();
-                loadAccounts();
-            } else {
-                showNotification(data.message || '资料修改失败', 'error');
+            if (photoFile) {
+                const formData = new FormData();
+                formData.append('file', photoFile);
+                const response = await fetch(`/api/accounts/${encodeURIComponent(currentProfileAccountId)}/profile/photo`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (!data.success) {
+                    showNotification(data.message || '头像修改失败', 'error');
+                    return;
+                }
+                messages.push(data.message || '头像已更新');
+            } else if (removePhoto) {
+                const response = await fetch(`/api/accounts/${encodeURIComponent(currentProfileAccountId)}/profile/photo`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+                if (!data.success) {
+                    showNotification(data.message || '删除头像失败', 'error');
+                    return;
+                }
+                messages.push(data.message || '头像已删除');
             }
+
+            showNotification(messages.join('；') || '资料已更新', 'success');
+            hideProfileModal();
+            loadAccounts();
         } catch (error) {
             console.error('修改资料失败:', error);
             showNotification('修改失败：' + error.message, 'error');
@@ -2505,6 +2673,57 @@
         document.getElementById('tpl-about').disabled = false;
         document.getElementById('tpl-clear-last-name').checked = false;
         document.getElementById('tpl-clear-about').checked = false;
+        document.getElementById('tpl-clear-photo').checked = false;
+        const photo = document.getElementById('tpl-photo');
+        if (photo) photo.value = '';
+        resetTplPhotoPreview();
+    }
+
+    function resetTplPhotoPreview() {
+        const preview = document.getElementById('tplPhotoPreview');
+        const fallback = document.getElementById('tplPhotoFallback');
+        if (preview) {
+            preview.removeAttribute('src');
+            preview.style.display = 'none';
+        }
+        if (fallback) fallback.style.display = 'flex';
+    }
+
+    function onTplPhotoSelected() {
+        const file = document.getElementById('tpl-photo').files[0];
+        if (!file) return;
+        document.getElementById('tpl-clear-photo').checked = false;
+        const preview = document.getElementById('tplPhotoPreview');
+        const fallback = document.getElementById('tplPhotoFallback');
+        const reader = new FileReader();
+        reader.onload = function () {
+            preview.src = reader.result;
+            preview.style.display = 'block';
+            fallback.style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function onTplPhotoClearToggle() {
+        if (!document.getElementById('tpl-clear-photo').checked) {
+            if (editingProfileTemplateId) showTplStoredPhoto(editingProfileTemplateId);
+            return;
+        }
+        document.getElementById('tpl-photo').value = '';
+        resetTplPhotoPreview();
+    }
+
+    function showTplStoredPhoto(templateId) {
+        const preview = document.getElementById('tplPhotoPreview');
+        const fallback = document.getElementById('tplPhotoFallback');
+        preview.onload = function () {
+            preview.style.display = 'block';
+            fallback.style.display = 'none';
+        };
+        preview.onerror = function () {
+            resetTplPhotoPreview();
+        };
+        preview.src = `/api/profile-templates/${encodeURIComponent(templateId)}/photo?t=${Date.now()}`;
     }
 
     function onTplClearToggle(field) {
@@ -2521,7 +2740,8 @@
             last_name: document.getElementById('tpl-last-name').value.trim(),
             about: document.getElementById('tpl-about').value,
             clear_last_name: document.getElementById('tpl-clear-last-name').checked,
-            clear_about: document.getElementById('tpl-clear-about').checked
+            clear_about: document.getElementById('tpl-clear-about').checked,
+            clear_photo: document.getElementById('tpl-clear-photo').checked
         };
     }
 
@@ -2538,19 +2758,30 @@
         document.getElementById('tpl-clear-about').checked = !!item.clear_about;
         document.getElementById('tpl-about').value = item.clear_about ? '' : (item.about || '');
         document.getElementById('tpl-about').disabled = !!item.clear_about;
+        document.getElementById('tpl-photo').value = '';
+        document.getElementById('tpl-clear-photo').checked = !!item.clear_photo;
+        if (item.photo && !item.clear_photo) showTplStoredPhoto(templateId);
+        else resetTplPhotoPreview();
         document.getElementById('tpl-title').focus();
     }
 
     async function submitProfileTemplate() {
         const payload = collectProfileTemplatePayload();
+        const formData = new FormData();
+        ['title', 'first_name', 'last_name', 'about'].forEach(key => formData.append(key, payload[key] || ''));
+        ['clear_last_name', 'clear_about', 'clear_photo'].forEach(key => {
+            formData.append(key, payload[key] ? 'true' : 'false');
+        });
+        const photo = document.getElementById('tpl-photo').files[0];
+        if (photo) formData.append('file', photo);
+
         const url = editingProfileTemplateId
             ? `/api/profile-templates/${encodeURIComponent(editingProfileTemplateId)}`
             : '/api/profile-templates';
         try {
             const response = await fetch(url, {
                 method: editingProfileTemplateId ? 'PUT' : 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                body: formData
             });
             const data = await response.json();
             if (!response.ok || !data.success) {
@@ -2590,7 +2821,7 @@
         const list = document.getElementById('profile-template-list');
         if (!list) return;
         if (!profileTemplates.length) {
-            list.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted);">还没有资料模板，先在上方保存一组名字和简介</div>';
+            list.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted);">还没有资料模板，先在上方保存名字、简介或头像</div>';
             return;
         }
         list.innerHTML = profileTemplates.map(item => `
@@ -2616,6 +2847,8 @@
         else if (item.last_name) changes.push(`姓氏 → ${item.last_name}`);
         if (item.clear_about) changes.push('简介 → （清空）');
         else if ((item.about || '').trim()) changes.push(`简介 → ${item.about}`);
+        if (item.photo) changes.push('头像 → 使用模板图片');
+        else if (item.clear_photo) changes.push('头像 → 删除');
         return changes;
     }
 
@@ -2686,7 +2919,7 @@
         updateBatchCounter();
     }
 
-    function fillSingleFromTemplate() {
+    async function fillSingleFromTemplate() {
         const item = profileTemplates.find(tpl => tpl.template_id === document.getElementById('single-template-picker').value);
         if (!item) return;
         if (item.first_name) document.getElementById('profileFirstName').value = item.first_name;
@@ -2695,6 +2928,27 @@
         if (item.clear_about) document.getElementById('profileAbout').value = '';
         else if (item.about) document.getElementById('profileAbout').value = item.about;
         updateAboutCounter();
+
+        const remove = document.getElementById('profilePhotoRemove');
+        const fileInput = document.getElementById('profilePhotoFile');
+        if (item.photo) {
+            remove.checked = false;
+            try {
+                const response = await fetch(`/api/profile-templates/${encodeURIComponent(item.template_id)}/photo`);
+                if (!response.ok) return;
+                const blob = await response.blob();
+                const file = new File([blob], item.photo, { type: blob.type || 'image/jpeg' });
+                const transfer = new DataTransfer();
+                transfer.items.add(file);
+                fileInput.files = transfer.files;
+                onProfilePhotoSelected();
+            } catch (error) {
+                console.error('读取模板头像失败:', error);
+            }
+        } else if (item.clear_photo) {
+            remove.checked = true;
+            onProfilePhotoRemoveToggle();
+        }
     }
 
     let profileTasks = [];
